@@ -16,7 +16,7 @@ setTimeout(function(){
 </script>
 """, unsafe_allow_html=True)
 
-st.title("🚀 LIVE SYSTEM (FIXED FINAL)")
+st.title("🚀 LIVE SYSTEM (STABLE)")
 
 # ======================
 # INPUT
@@ -49,11 +49,11 @@ def get_4h():
 df = get_4h()
 
 # ======================
-# LIVE DATA (1m)
+# LIVE 1m DATA
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 50}
+    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 20}
 ).json()
 
 live_df = pd.DataFrame(live, columns=[
@@ -68,20 +68,19 @@ live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
 # ======================
-# BUILD CURRENT CANDLE
+# BUILD CURRENT CANDLE (همون نسخه قبلی درست)
 # ======================
 last_4h = df.index[-1]
 next_4h = last_4h + pd.Timedelta(hours=4)
 
-# 🔥 درست: دیتا از شروع کندل جدید
-current = live_df[live_df.index >= next_4h]
+current = live_df[live_df.index >= last_4h]
 
 if not current.empty:
 
     open_ = current["Open"].iloc[0]
     high_ = current["High"].max()
     low_  = current["Low"].min()
-    close_ = current["Close"].iloc[-1]  # 🔥 لایو
+    close_ = current["Close"].iloc[-1]  # 🔥 لایو واقعی
 
     new_row = pd.DataFrame({
         "Open":[open_],
@@ -97,7 +96,7 @@ if not current.empty:
     df = df.sort_index()
 
 # ======================
-# SIGNAL + PnL
+# SIGNAL + PnL (اصلاح شده)
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -115,12 +114,16 @@ for i in range(2, len(df)):
         move = prev1["Close"] - prev2["Close"]
         target = entry + move
 
+        high = df["High"].iloc[i]
         close = df["Close"].iloc[i]
 
-        if close >= target:
-            pnl = (target - entry) / entry * 100
+        # 🔥 منطق درست PnL
+        if high >= target:
+            exit_price = target
         else:
-            pnl = (close - entry) / entry * 100
+            exit_price = close
+
+        pnl = (exit_price - entry) / entry * 100
 
         df.iloc[i, df.columns.get_loc("Decision")] = "TRADE"
         df.iloc[i, df.columns.get_loc("Entry")] = entry
@@ -145,17 +148,17 @@ table = df_view.reset_index()[[
 
 table["Execute"] = False
 
-st.data_editor(table, use_container_width=True)
+edited = st.data_editor(table, use_container_width=True)
 
 # ======================
-# RESULT
+# RESULT (اصلاح شده)
 # ======================
 balance = capital
 
-for i in range(len(table)):
-    if table.iloc[i]["Execute"]:
+for i in range(len(edited)):
+    if edited.iloc[i]["Execute"]:
 
-        pnl = table.iloc[i]["PnL %"]
+        pnl = edited.iloc[i]["PnL %"]
 
         if pd.notna(pnl):
             balance *= (1 + pnl/100)
