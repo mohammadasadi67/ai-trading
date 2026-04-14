@@ -4,7 +4,7 @@ import numpy as np
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 REAL-TIME 4H (NO ERROR FINAL)")
+st.title("🚀 REAL-TIME 4H TRADING SYSTEM")
 
 # ======================
 # INPUT
@@ -19,7 +19,7 @@ with col2:
     capital = st.number_input("Capital ($)", value=100)
 
 # ======================
-# HISTORICAL
+# GET HISTORICAL DATA
 # ======================
 def get_hist(start, end):
 
@@ -66,7 +66,9 @@ def get_hist(start, end):
 
     return df
 
-# buffer
+# ======================
+# LOAD DATA + BUFFER
+# ======================
 df = get_hist(pd.Timestamp(start)-pd.Timedelta(days=2), end)
 
 if df.empty:
@@ -74,7 +76,7 @@ if df.empty:
     st.stop()
 
 # ======================
-# LIVE 1m
+# LIVE 1m DATA
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
@@ -89,11 +91,12 @@ live_df = pd.DataFrame(live, columns=[
 live_df["time"] = pd.to_datetime(live_df["time"], unit="ms")
 live_df = live_df[["time","open","high","low","close"]]
 live_df.columns = ["Time","Open","High","Low","Close"]
+
 live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
 # ======================
-# ساخت کندل 4H (بدون floor)
+# BUILD LIVE 4H CANDLE (بدون floor)
 # ======================
 last_time = live_df.index[-1]
 
@@ -130,7 +133,7 @@ if not current_data.empty:
     df = df.sort_index()
 
 # ======================
-# SIGNAL
+# SIGNAL LOGIC
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -160,10 +163,13 @@ for i in range(2, len(df)):
         df.iloc[i, df.columns.get_loc("PnL %")] = pnl
 
 # ======================
-# FILTER
+# FILTER VIEW
 # ======================
 df_view = df[(df.index >= pd.Timestamp(start)) &
              (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
+
+# 🔥 رفع ارور Time
+df_view.index.name = "Time"
 
 # ======================
 # TABLE
@@ -175,17 +181,20 @@ table = df_view.reset_index()[[
 
 table["Execute"] = False
 
-st.data_editor(table, use_container_width=True)
+st.subheader("📊 LIVE 4H CANDLES")
+
+edited = st.data_editor(table, use_container_width=True)
 
 # ======================
 # RESULT
 # ======================
 balance = capital
 
-for i in range(len(table)):
-    if table.iloc[i]["Execute"]:
-        pnl = table.iloc[i]["PnL %"]
+for i in range(len(edited)):
+    if edited.iloc[i]["Execute"]:
+        pnl = edited.iloc[i]["PnL %"]
         if pd.notna(pnl):
             balance *= (1 + pnl/100)
 
+st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
