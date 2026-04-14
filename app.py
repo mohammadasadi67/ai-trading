@@ -4,7 +4,7 @@ import numpy as np
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 REAL-TIME 4H TRADING SYSTEM")
+st.title("🚀 TRUE LIVE 4H (FIXED)")
 
 # ======================
 # INPUT
@@ -19,7 +19,7 @@ with col2:
     capital = st.number_input("Capital ($)", value=100)
 
 # ======================
-# GET HISTORICAL DATA
+# HIST DATA
 # ======================
 def get_hist(start, end):
 
@@ -57,30 +57,21 @@ def get_hist(start, end):
     ])
 
     df["time"] = pd.to_datetime(df["time"], unit="ms")
-
     df = df[["time","open","high","low","close"]]
     df.columns = ["Time","Open","High","Low","Close"]
-
     df.set_index("Time", inplace=True)
     df = df.astype(float)
 
     return df
 
-# ======================
-# LOAD DATA + BUFFER
-# ======================
 df = get_hist(pd.Timestamp(start)-pd.Timedelta(days=2), end)
 
-if df.empty:
-    st.error("No data")
-    st.stop()
-
 # ======================
-# LIVE 1m DATA
+# LIVE 1m (بیشتر بگیر!)
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 300}
+    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 1000}  # 🔥 قبلاً 300 بود
 ).json()
 
 live_df = pd.DataFrame(live, columns=[
@@ -91,28 +82,23 @@ live_df = pd.DataFrame(live, columns=[
 live_df["time"] = pd.to_datetime(live_df["time"], unit="ms")
 live_df = live_df[["time","open","high","low","close"]]
 live_df.columns = ["Time","Open","High","Low","Close"]
-
 live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
 # ======================
-# BUILD LIVE 4H CANDLE (بدون floor)
+# BUILD LIVE 4H
 # ======================
 last_time = live_df.index[-1]
 
 hour = last_time.hour
 block = (hour // 4) * 4
 
-current_start = last_time.replace(
-    hour=block,
-    minute=0,
-    second=0,
-    microsecond=0
-)
+current_start = last_time.replace(hour=block, minute=0, second=0, microsecond=0)
 
 current_data = live_df[live_df.index >= current_start]
 
-if not current_data.empty:
+# 🔥 این شرط مهمه
+if len(current_data) > 5:
 
     open_ = current_data["Open"].iloc[0]
     high_ = current_data["High"].max()
@@ -133,7 +119,7 @@ if not current_data.empty:
     df = df.sort_index()
 
 # ======================
-# SIGNAL LOGIC
+# SIGNAL
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -163,12 +149,11 @@ for i in range(2, len(df)):
         df.iloc[i, df.columns.get_loc("PnL %")] = pnl
 
 # ======================
-# FILTER VIEW
+# FILTER
 # ======================
 df_view = df[(df.index >= pd.Timestamp(start)) &
              (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
-# 🔥 رفع ارور Time
 df_view.index.name = "Time"
 
 # ======================
@@ -181,20 +166,17 @@ table = df_view.reset_index()[[
 
 table["Execute"] = False
 
-st.subheader("📊 LIVE 4H CANDLES")
-
-edited = st.data_editor(table, use_container_width=True)
+st.data_editor(table, use_container_width=True)
 
 # ======================
 # RESULT
 # ======================
 balance = capital
 
-for i in range(len(edited)):
-    if edited.iloc[i]["Execute"]:
-        pnl = edited.iloc[i]["PnL %"]
+for i in range(len(table)):
+    if table.iloc[i]["Execute"]:
+        pnl = table.iloc[i]["PnL %"]
         if pd.notna(pnl):
             balance *= (1 + pnl/100)
 
-st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
