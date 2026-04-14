@@ -4,17 +4,24 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🚀 REAL-TIME 4H SIGNAL")
+st.title("🚀 FULL 4H SIGNAL SYSTEM")
 
 # ======================
 # INPUT
 # ======================
-capital = st.number_input("Capital ($)", value=1000)
+col1, col2 = st.columns(2)
+
+with col1:
+    start = st.date_input("Start")
+    end   = st.date_input("End")
+
+with col2:
+    capital = st.number_input("Capital ($)", value=1000)
 
 # ======================
-# DATA 4H (بسته شده‌ها)
+# DATA 4H
 # ======================
-df = yf.download("BTC-USD", interval="4h", period="3d")
+df = yf.download("BTC-USD", interval="4h", start=start, end=end)
 
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
@@ -22,83 +29,97 @@ if isinstance(df.columns, pd.MultiIndex):
 df = df[["Open","High","Low","Close"]]
 
 # ======================
-# LIVE 1m DATA
+# SIGNAL برای همه کندل‌ها
+# ======================
+df["Decision"] = "WAIT"
+df["Entry"] = np.nan
+df["Target"] = np.nan
+
+for i in range(2, len(df)):
+
+    prev1 = df.iloc[i-1]
+    prev2 = df.iloc[i-2]
+
+    trend = prev1["Close"] > prev2["Close"]
+
+    if trend:
+
+        entry = df["Open"].iloc[i]
+
+        prev_move = prev1["Close"] - prev2["Close"]
+        target = entry + prev_move
+
+        df.at[df.index[i], "Decision"] = "TRADE"
+        df.at[df.index[i], "Entry"] = entry
+        df.at[df.index[i], "Target"] = target
+
+# ======================
+# ADD LIVE CANDLE (جدید)
 # ======================
 live = yf.download("BTC-USD", period="1d", interval="1m")
 
 if isinstance(live.columns, pd.MultiIndex):
     live.columns = live.columns.get_level_values(0)
 
-# ======================
-# تشخیص شروع کندل جدید
-# ======================
-now = pd.Timestamp.now()
+if not live.empty:
 
-new_candle = (now.minute == 0) and (now.hour % 4 == 0)
+    now = pd.Timestamp.now()
 
-# ======================
-# SIGNAL
-# ======================
-signal_data = []
+    hour_block = (now.hour // 4) * 4
+    candle_start = now.replace(hour=hour_block, minute=0, second=0, microsecond=0)
 
-if new_candle:
+    current_data = live[live.index >= candle_start]
 
-    prev1 = df.iloc[-1]
-    prev2 = df.iloc[-2]
+    if not current_data.empty:
 
-    trend = prev1["Close"] > prev2["Close"]
+        open_ = current_data["Open"].iloc[0]
+        high_ = current_data["High"].max()
+        low_ = current_data["Low"].min()
+        close_ = current_data["Close"].iloc[-1]
 
-    if trend:
+        new_row = pd.DataFrame({
+            "Open": [open_],
+            "High": [high_],
+            "Low": [low_],
+            "Close": [close_],
+            "Decision": ["LIVE"],
+            "Entry": [open_],
+            "Target": [np.nan]
+        }, index=[candle_start])
 
-        entry = live["Open"].iloc[-1]
-
-        prev_move = prev1["Close"] - prev2["Close"]
-        target = entry + prev_move
-
-        signal_data.append({
-            "Time": now,
-            "Decision": "TRADE",
-            "Entry": entry,
-            "Target": target
-        })
-
-        st.success("🔥 NEW 4H SIGNAL")
-        st.write(f"Entry: {entry:.2f}")
-        st.write(f"Target: {target:.2f}")
-
-    else:
-        st.warning("WAIT")
-
-else:
-    st.info("⏳ Waiting for new 4H candle...")
+        df = pd.concat([df, new_row])
 
 # ======================
 # TABLE
 # ======================
-signal_df = pd.DataFrame(signal_data)
+table = df[[
+    "Open","High","Low","Close",
+    "Decision","Entry","Target"
+]].copy()
 
-if not signal_df.empty:
+table["Execute"] = False
 
-    signal_df["Execute"] = False
+st.subheader("📊 ALL 4H CANDLES + LIVE")
 
-    edited = st.data_editor(signal_df, use_container_width=True)
+edited = st.data_editor(table, use_container_width=True)
 
-    # ======================
-    # SIMULATION
-    # ======================
-    balance = capital
+# ======================
+# RESULT
+# ======================
+balance = capital
 
-    edited_df = pd.DataFrame(edited)
+edited_df = pd.DataFrame(edited).reset_index(drop=True)
 
-    for i in range(len(edited_df)):
+for i in range(len(edited_df)):
 
-        if edited_df.at[i, "Execute"]:
+    if edited_df.at[i, "Execute"]:
 
-            entry = edited_df.at[i, "Entry"]
-            target = edited_df.at[i, "Target"]
+        entry = edited_df.at[i, "Entry"]
+        target = edited_df.at[i, "Target"]
 
+        if pd.notna(entry) and pd.notna(target):
             pnl = (target - entry) / entry
             balance *= (1 + pnl)
 
-    st.subheader("💰 RESULT")
-    st.metric("Final Balance", f"${balance:.2f}")
+st.subheader("💰 RESULT")
+st.metric("Final Balance", f"${balance:.2f}")
