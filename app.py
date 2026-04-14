@@ -5,8 +5,7 @@ import requests
 from datetime import datetime, timedelta, date
 
 st.set_page_config(layout="wide", page_title="Professional Trading Dashboard")
-st.title("@-- mohammad asadollahzadeh 
-مجید این تست کن ببین جوابه؟")
+st.title("@-- mohammad asadollahzadeh_ مجید تست کن ببین اوکیه؟")
 
 # ======================
 # DATA
