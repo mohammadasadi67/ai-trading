@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🚀 CLEAN TRADING TABLE")
+st.title("🚀 SMART HOLD STRATEGY")
 
 # ======================
 # INPUT
@@ -29,59 +29,70 @@ if isinstance(df.columns, pd.MultiIndex):
 df = df[["Open","High","Low","Close","Volume"]]
 
 # ======================
-# INTERNAL LOGIC (پنهان)
+# SIGNAL (پنهان)
 # ======================
 vol_avg = df["Volume"].rolling(20).mean()
-vol_signal = df["Volume"] > vol_avg
+signal = df["Volume"] > vol_avg
 
 # ======================
-# ENTRY / SL / TP
+# ENTRY / EXIT LOGIC
 # ======================
 df["Entry"] = np.nan
-df["SL"] = np.nan
-df["TP"] = np.nan
-
-df.loc[vol_signal, "Entry"] = df["Close"]
-df.loc[vol_signal, "SL"] = df["Close"] * 0.97
-df.loc[vol_signal, "TP"] = df["Close"] * 1.05
-
-# ======================
-# REAL PNL
-# ======================
+df["Target"] = np.nan
+df["Exit"] = np.nan
 df["PnL %"] = np.nan
 
-for i in range(len(df)):
+for i in range(len(df)-1):
 
-    if vol_signal.iloc[i]:
+    if signal.iloc[i]:
 
         entry = df["Close"].iloc[i]
-        tp = entry * 1.05
-        sl = entry * 0.97
+        target = entry * 1.05
+
+        prev_close = entry
+        max_high = entry
+        exit_price = entry
 
         for j in range(i+1, len(df)):
 
+            close = df["Close"].iloc[j]
             high = df["High"].iloc[j]
-            low = df["Low"].iloc[j]
 
-            if high >= tp:
-                df.at[df.index[i], "PnL %"] = ((tp - entry) / entry) * 100
+            # اگر تارگت خورد
+            if high >= target:
+                exit_price = target
                 break
 
-            if low <= sl:
-                df.at[df.index[i], "PnL %"] = ((sl - entry) / entry) * 100
+            # کندل خوب؟
+            good_candle = (close > prev_close) or (high > max_high)
+
+            if good_candle:
+                prev_close = close
+                max_high = max(max_high, high)
+                exit_price = close
+            else:
+                # کندل بد → خروج
+                exit_price = close
                 break
+
+        pnl = (exit_price - entry) / entry * 100
+
+        df.at[df.index[i], "Entry"] = entry
+        df.at[df.index[i], "Target"] = target
+        df.at[df.index[i], "Exit"] = exit_price
+        df.at[df.index[i], "PnL %"] = pnl
 
 # ======================
 # DECISION
 # ======================
-df["Decision"] = np.where(vol_signal, "TRADE", "WAIT")
+df["Decision"] = np.where(signal, "TRADE", "WAIT")
 
 # ======================
-# TABLE (فقط چیزهای مهم)
+# TABLE
 # ======================
 table = df[[
     "Open","High","Low","Close",
-    "Decision","Entry","SL","TP","PnL %"
+    "Decision","Entry","Target","Exit","PnL %"
 ]].copy()
 
 table["Execute"] = False
