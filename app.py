@@ -4,7 +4,7 @@ import numpy as np
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 REAL TRADINGVIEW SIGNAL (BINANCE)")
+st.title("🚀 REAL TRADINGVIEW SIGNAL (BINANCE FIXED)")
 
 # ======================
 # INPUT
@@ -12,10 +12,11 @@ st.title("🚀 REAL TRADINGVIEW SIGNAL (BINANCE)")
 capital = st.number_input("Capital ($)", value=1000)
 
 # ======================
-# GET BINANCE DATA
+# GET BINANCE DATA (FIXED)
 # ======================
 def get_binance_klines(symbol="BTCUSDT", interval="4h", limit=200):
-    url = "https://api.binance.com/api/v3/klines"
+
+    url = "https://data-api.binance.vision/api/v3/klines"  # 🔥 نسخه بدون بلاک
 
     params = {
         "symbol": symbol,
@@ -23,30 +24,51 @@ def get_binance_klines(symbol="BTCUSDT", interval="4h", limit=200):
         "limit": limit
     }
 
-    data = requests.get(url, params=params).json()
+    try:
+        response = requests.get(url, params=params, timeout=10)
 
-    df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume",
-        "close_time","qav","trades","tbbav","tbqav","ignore"
-    ])
+        if response.status_code != 200:
+            st.error("❌ Binance API Error")
+            st.write(response.text)
+            return pd.DataFrame()
 
-    df["time"] = pd.to_datetime(df["time"], unit="ms")
+        data = response.json()
 
-    df = df[["time","open","high","low","close"]]
-    df.columns = ["Time","Open","High","Low","Close"]
+        if not data or isinstance(data, dict):
+            st.error("❌ No Data from Binance")
+            st.write(data)
+            return pd.DataFrame()
 
-    df.set_index("Time", inplace=True)
-    df = df.astype(float)
+        df = pd.DataFrame(data, columns=[
+            "time","open","high","low","close","volume",
+            "close_time","qav","trades","tbbav","tbqav","ignore"
+        ])
 
-    return df
+        df["time"] = pd.to_datetime(df["time"], unit="ms")
+
+        df = df[["time","open","high","low","close"]]
+        df.columns = ["Time","Open","High","Low","Close"]
+
+        df.set_index("Time", inplace=True)
+        df = df.astype(float)
+
+        return df
+
+    except Exception as e:
+        st.error("❌ Request Failed")
+        st.write(e)
+        return pd.DataFrame()
 
 # ======================
-# DATA (مثل TradingView)
+# LOAD DATA
 # ======================
 df = get_binance_klines()
 
+if df.empty:
+    st.stop()
+
 # ======================
-# SIGNAL (همون منطق تو)
+# SIGNAL LOGIC (همون تو)
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -64,14 +86,12 @@ for i in range(2, len(df)):
 
         entry = df["Open"].iloc[i]
 
-        # تارگت داینامیک
         prev_move = prev1["Close"] - prev2["Close"]
         target = entry + prev_move
 
         high = df["High"].iloc[i]
         close = df["Close"].iloc[i]
 
-        # داخل همان کندل
         if high >= target:
             exit_price = target
         else:
@@ -87,23 +107,23 @@ for i in range(2, len(df)):
 # ======================
 # TABLE
 # ======================
-table = df[[
-    "Open","High","Low","Close",
+table = df.reset_index()[[
+    "Time","Open","High","Low","Close",
     "Decision","Entry","Target","PnL %"
 ]].copy()
 
 table["Execute"] = False
 
-st.subheader("📊 ALL 4H CANDLES (BINANCE)")
+st.subheader("📊 ALL 4H CANDLES (REAL BINANCE)")
 
 edited = st.data_editor(table, use_container_width=True)
 
 # ======================
-# SIMULATION
+# SIMULATION (FIXED)
 # ======================
 balance = capital
 
-edited_df = pd.DataFrame(edited).reset_index(drop=True)
+edited_df = pd.DataFrame(edited)
 
 for i in range(len(edited_df)):
 
