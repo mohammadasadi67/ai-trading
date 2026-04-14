@@ -6,20 +6,17 @@ import requests
 st.set_page_config(layout="wide")
 
 # ======================
-# AUTO REFRESH (1s)
+# AUTO REFRESH
 # ======================
-st.markdown(
-    """
-    <script>
-    setTimeout(function(){
-        window.location.reload();
-    }, 1000);
-    </script>
-    """,
-    unsafe_allow_html=True
-)
+st.markdown("""
+<script>
+setTimeout(function(){
+    window.location.reload();
+}, 1000);
+</script>
+""", unsafe_allow_html=True)
 
-st.title("🚀 LIVE TRADING SYSTEM")
+st.title("🚀 LIVE SYSTEM (FIXED FINAL)")
 
 # ======================
 # INPUT
@@ -31,9 +28,9 @@ capital = st.number_input("Capital", value=100)
 # ======================
 # GET 4H DATA
 # ======================
-def get_4h(limit=200):
+def get_4h():
     url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": limit}
+    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 200}
     data = requests.get(url, params=params).json()
 
     df = pd.DataFrame(data, columns=[
@@ -52,11 +49,11 @@ def get_4h(limit=200):
 df = get_4h()
 
 # ======================
-# LIVE 1m DATA
+# LIVE DATA (1m)
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 30}
+    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 50}
 ).json()
 
 live_df = pd.DataFrame(live, columns=[
@@ -71,12 +68,13 @@ live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
 # ======================
-# BUILD LIVE CANDLE
+# BUILD CURRENT CANDLE
 # ======================
 last_4h = df.index[-1]
 next_4h = last_4h + pd.Timedelta(hours=4)
 
-current = live_df[live_df.index >= last_4h]
+# 🔥 درست: دیتا از شروع کندل جدید
+current = live_df[live_df.index >= next_4h]
 
 if not current.empty:
 
@@ -99,11 +97,12 @@ if not current.empty:
     df = df.sort_index()
 
 # ======================
-# SIGNAL
+# SIGNAL + PnL
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
 df["Target"] = np.nan
+df["PnL %"] = np.nan
 
 for i in range(2, len(df)):
 
@@ -116,9 +115,17 @@ for i in range(2, len(df)):
         move = prev1["Close"] - prev2["Close"]
         target = entry + move
 
+        close = df["Close"].iloc[i]
+
+        if close >= target:
+            pnl = (target - entry) / entry * 100
+        else:
+            pnl = (close - entry) / entry * 100
+
         df.iloc[i, df.columns.get_loc("Decision")] = "TRADE"
         df.iloc[i, df.columns.get_loc("Entry")] = entry
         df.iloc[i, df.columns.get_loc("Target")] = target
+        df.iloc[i, df.columns.get_loc("PnL %")] = pnl
 
 # ======================
 # FILTER
@@ -133,37 +140,24 @@ df_view = df[(df.index >= pd.Timestamp(start)) &
 # ======================
 table = df_view.reset_index()[[
     "Time","Open","High","Low","Close",
-    "Decision","Entry","Target"
+    "Decision","Entry","Target","PnL %"
 ]].copy()
 
 table["Execute"] = False
 
-st.subheader("📊 LIVE CANDLES")
-
-edited = st.data_editor(table, use_container_width=True)
+st.data_editor(table, use_container_width=True)
 
 # ======================
-# RESULT (PnL واقعی)
+# RESULT
 # ======================
 balance = capital
 
-for i in range(len(edited)):
+for i in range(len(table)):
+    if table.iloc[i]["Execute"]:
 
-    if edited.iloc[i]["Execute"]:
+        pnl = table.iloc[i]["PnL %"]
 
-        entry = edited.iloc[i]["Entry"]
-        target = edited.iloc[i]["Target"]
-        close  = edited.iloc[i]["Close"]
+        if pd.notna(pnl):
+            balance *= (1 + pnl/100)
 
-        if pd.notna(entry) and pd.notna(target):
-
-            # رسیدن به تارگت
-            if close >= target:
-                pnl = (target - entry) / entry
-            else:
-                pnl = (close - entry) / entry
-
-            balance *= (1 + pnl)
-
-st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
