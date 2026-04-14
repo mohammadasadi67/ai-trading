@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timedelta, date
 
 st.set_page_config(layout="wide", page_title="Professional Trading Dashboard")
-st.title("🚀 MOHAMMAD PATTERN")
+st.title("MOHAMMAD PATTERN")
 
 # ======================
 # DATA
@@ -47,7 +47,12 @@ def get_time_remaining():
 # ======================
 initial_capital = st.sidebar.number_input("Capital", value=1000.0)
 fee_rate = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
-start_date = st.sidebar.date_input("Start", value=date(2024,1,1))
+
+# ✅ دیفالت = 7 روز قبل
+start_date = st.sidebar.date_input(
+    "Start",
+    value=date.today() - timedelta(days=7)
+)
 
 # ======================
 # LOAD
@@ -64,15 +69,13 @@ if not df.empty:
     df.iloc[-1, df.columns.get_loc("Status")] = "LIVE"
 
     # ======================
-    # CANDLE TYPE + O→C
+    # CANDLE TYPE
     # ======================
     df["Candle"] = np.where(
         df["Close"] > df["Open"],
         "🟢 Bullish",
         "🔴 Bearish"
     )
-
-    df["O→C"] = df["Open"].round(1).astype(str) + " → " + df["Close"].round(1).astype(str)
 
     # ======================
     # STRATEGY
@@ -158,7 +161,6 @@ if not df.empty:
         use_container_width=True,
         height=600,
         column_config={
-            "O→C": "Open → Close",
             "Candle": "Type",
 
             "High": st.column_config.NumberColumn("High", format="$%.1f"),
