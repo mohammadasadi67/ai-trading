@@ -93,7 +93,7 @@ for col, t in zip(header, titles):
 # ======================
 for i, (idx, row) in enumerate(rows):
 
-    # ✅ کلید یکتا (حل کامل ارور)
+    # ✅ کلید یکتا (بدون تداخل)
     key = f"trade_{i}_{idx.strftime('%Y%m%d%H%M')}"
 
     cols = st.columns([2,1,1,1,1,1,1,1,1,1])
@@ -123,7 +123,6 @@ for i, (idx, row) in enumerate(rows):
     # ======================
     if row["Decision"] == "TRADE":
 
-        # فقط بار اول مقداردهی
         if key not in st.session_state:
             st.session_state[key] = row["PnL %"] > 0
 
