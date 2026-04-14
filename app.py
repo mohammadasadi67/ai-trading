@@ -1,67 +1,111 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import requests
+from datetime import datetime, timedelta
 
-st.set_page_config(layout="wide", page_title="Fast Trade Panel")
+st.set_page_config(layout="wide", page_title="Live Trading Panel")
 
 # ======================
-# تابع دریافت دیتا (با کش برای سرعت)
+# دریافت دیتای کاملاً زنده (بدون کش سنگین)
 # ======================
-@st.cache_data(ttl=60)
-def fetch_data():
+def get_live_data():
     url = "https://data-api.binance.vision/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 100}
     try:
         data = requests.get(url, params=params).json()
-        df = pd.DataFrame(data).iloc[:, :5]
-        df.columns = ["Time", "Open", "High", "Low", "Close"]
-        df["Time"] = pd.to_datetime(df["Time"], unit="ms")
-        df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]].astype(float)
+        df = pd.DataFrame(data, columns=[
+            "time","open","high","low","close","volume",
+            "close_time","qav","trades","tbbav","tbqav","ignore"
+        ])
+        df["time"] = pd.to_datetime(df["time"], unit="ms")
+        df = df[["time","open","high","low","close"]]
+        df.columns = ["Time","Open","High","Low","Close"]
+        df.set_index("Time", inplace=True)
+        df = df.astype(float)
         return df
     except:
         return pd.DataFrame()
 
 # ======================
-# بدنه اصلی برنامه
+# تایمر معکوس تا کندل بعدی
 # ======================
-st.title("🚀 پنل سریع BTC")
+def get_countdown():
+    now = datetime.utcnow()
+    # پیدا کردن ساعت بسته شدن کندل 4 ساعته بعدی (0, 4, 8, 12, 16, 20)
+    next_hour = (now.hour // 4 + 1) * 4
+    if next_hour >= 24:
+        next_candle_time = datetime(now.year, now.month, now.day) + timedelta(days=1)
+    else:
+        next_candle_time = datetime(now.year, now.month, now.day, next_hour)
+    
+    remaining = next_candle_time - now
+    return str(remaining).split(".")[0] # فرمت HH:MM:SS
 
-# دکمه آپدیت دستی برای جلوگیری از لود بی وقفه
-if st.button("🔄 آپدیت قیمت‌ها"):
-    st.cache_data.clear()
-    st.rerun()
-
-df = fetch_data()
+# ======================
+# رابط کاربری
+# ======================
+df = get_live_data()
 
 if not df.empty:
-    # محاسبات سریع بدون حلقه For سنگین
-    df['Prev_Close'] = df['Close'].shift(1)
-    df['Prev2_Close'] = df['Close'].shift(2)
+    current_price = df["Close"].iloc[-1]
     
-    # تعیین سیگنال
-    df['Signal'] = "WAIT"
-    mask = df['Prev_Close'] > df['Prev2_Close']
-    df.loc[mask, 'Signal'] = "TRADE"
-    
-    # محاسبه سود و هدف
-    df['Target'] = df['Open'] + (df['Prev_Close'] - df['Prev2_Close'])
-    df['PnL%'] = ((df['Close'] - df['Open']) / df['Open']) * 100
-    
-    # تمیزکاری برای نمایش
-    view_df = df[['Time', 'Open', 'Close', 'Signal', 'Target', 'PnL%']].copy()
-    view_df['Time'] = view_df['Time'].dt.strftime('%m-%d %H:%M')
-    
-    # نمایش در یک جدول شیک و سریع
-    st.dataframe(
-        view_df.sort_index(ascending=False),
-        use_container_width=True,
-        height=500,
-        column_config={
-            "PnL%": st.column_config.NumberColumn(format="%.2f%%"),
-            "Signal": st.column_config.TextColumn("وضعیت")
-        }
-    )
+    col_t1, col_t2 = st.columns([3, 1])
+    col_t1.title(f"💰 قیمت لحظه‌ای: ${current_price:,.2f}")
+    col_t2.metric("⏳ زمان تا کندل بعد", get_countdown())
 
-    # نمایش موجودی در پایین
-    st.divider()
-    st.metric("BTC Price", f"${df['Close'].iloc[-1]:,.2f}")
+    # منطق سیگنال
+    df["Decision"] = "WAIT"
+    df["Entry"] = np.nan
+    df["Target"] = np.nan
+    
+    # محاسبه سیگنال برای ردیف‌های قبلی و فعلی
+    for i in range(2, len(df)):
+        p1 = df.iloc[i-1]
+        p2 = df.iloc[i-2]
+        
+        if p1["Close"] > p2["Close"]:
+            df.iloc[i, df.columns.get_loc("Decision")] = "TRADE"
+            entry = df["Open"].iloc[i]
+            df.iloc[i, df.columns.get_loc("Entry")] = entry
+            df.iloc[i, df.columns.get_loc("Target")] = entry + (p1["Close"] - p2["Close"])
+
+    # نمایش جدول (فقط 10 ردیف آخر برای سرعت بیشتر)
+    st.subheader("📊 وضعیت سیگنال‌های اخیر")
+    
+    # معکوس کردن برای نمایش جدیدترین‌ها در بالا
+    view_df = df.iloc[-10:].copy().sort_index(ascending=False)
+    
+    for idx, row in view_df.iterrows():
+        is_live = (idx == df.index[-1])
+        with st.container():
+            c = st.columns([2, 1, 1, 1, 1, 1])
+            
+            # زمان
+            c[0].write(f"📅 {idx.strftime('%m-%d %H:%M')}")
+            
+            # وضعیت کندل
+            if is_live:
+                c[1].info("LIVE 🔵")
+                c[2].write(f"Price: {row['Close']:.1f}")
+            else:
+                c[1].write("CLOSED ⚪")
+                c[2].write(f"Close: {row['Close']:.1f}")
+            
+            # سیگنال
+            if row["Decision"] == "TRADE":
+                c[3].success("🟢 TRADE")
+                c[4].write(f"Target: {row['Target']:.1f}")
+                # محاسبه سود لحظه‌ای برای کندل لایو
+                pnl = ((row['Close'] - row['Open']) / row['Open']) * 100
+                color = "green" if pnl > 0 else "red"
+                c[5].markdown(f"**:{color}[{pnl:.2f}%]**")
+            else:
+                c[3].write("⚪ WAIT")
+                c[4].write("-")
+                c[5].write("-")
+        st.divider()
+
+# رفرش خودکار صفحه هر 10 ثانیه برای آپدیت قیمت
+st.empty()
+st.markdown("<script>setTimeout(function(){window.location.reload();}, 10000);</script>", unsafe_allow_html=True)
