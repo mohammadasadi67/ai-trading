@@ -6,7 +6,7 @@ import requests
 st.set_page_config(layout="wide")
 
 # ======================
-# AUTO REFRESH
+# AUTO REFRESH 1s
 # ======================
 st.markdown("""
 <script>
@@ -16,7 +16,13 @@ setTimeout(function(){
 </script>
 """, unsafe_allow_html=True)
 
-st.title("🚀 LIVE SYSTEM (FINAL)")
+st.title("🚀 LIVE SYSTEM FINAL")
+
+# ======================
+# SESSION STATE (Execute)
+# ======================
+if "exec" not in st.session_state:
+    st.session_state.exec = {}
 
 # ======================
 # INPUT
@@ -49,11 +55,21 @@ def get_4h():
 df = get_4h()
 
 # ======================
-# LIVE 1m DATA
+# LIVE PRICE (REAL)
+# ======================
+ticker = requests.get(
+    "https://api.binance.com/api/v3/ticker/price",
+    params={"symbol": "BTCUSDT"}
+).json()
+
+live_price = float(ticker["price"])
+
+# ======================
+# LIVE 1m DATA (برای High/Low)
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 50}
+    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 30}
 ).json()
 
 live_df = pd.DataFrame(live, columns=[
@@ -73,15 +89,14 @@ live_df = live_df.astype(float)
 last_4h = df.index[-1]
 next_4h = last_4h + pd.Timedelta(hours=4)
 
-# 🔥 مهم: دیتا از شروع کندل جدید
 current = live_df[live_df.index >= last_4h]
 
 if not current.empty:
 
     open_ = current["Open"].iloc[0]
-    high_ = current["High"].max()
-    low_  = current["Low"].min()
-    close_ = current["Close"].iloc[-1]  # 🔥 لایو
+    high_ = max(current["High"].max(), live_price)
+    low_  = min(current["Low"].min(), live_price)
+    close_ = live_price  # 🔥 لایو واقعی
 
     new_row = pd.DataFrame({
         "Open":[open_],
@@ -118,7 +133,6 @@ for i in range(2, len(df)):
         high = df["High"].iloc[i]
         close = df["Close"].iloc[i]
 
-        # 🔥 منطق درست
         if high >= target:
             exit_price = target
         else:
@@ -147,28 +161,34 @@ table = df_view.reset_index()[[
     "Decision","Entry","Target","PnL %"
 ]].copy()
 
-table["Execute"] = False
+# حفظ Execute
+table["Execute"] = [
+    st.session_state.exec.get(i, False) for i in range(len(table))
+]
 
 edited = st.data_editor(table, use_container_width=True)
 
+# ذخیره تیک‌ها
+for i in range(len(edited)):
+    st.session_state.exec[i] = edited.iloc[i]["Execute"]
+
 # ======================
-# RESULT (فقط کندل بسته)
+# RESULT
 # ======================
 balance = capital
 
 for i in range(len(edited)):
 
-    if edited.iloc[i]["Execute"]:
+    if st.session_state.exec.get(i, False):
 
-        # ❗ کندل آخر (لایو) محاسبه نشه
-        if i < len(edited) - 1:
+        if i < len(edited) - 1:  # فقط کندل بسته
 
             entry = edited.iloc[i]["Entry"]
             target = edited.iloc[i]["Target"]
             high = edited.iloc[i]["High"]
             close = edited.iloc[i]["Close"]
 
-            if pd.notna(entry) and pd.notna(target):
+            if pd.notna(entry):
 
                 if high >= target:
                     exit_price = target
@@ -176,7 +196,6 @@ for i in range(len(edited)):
                     exit_price = close
 
                 pnl = (exit_price - entry) / entry
-
                 balance *= (1 + pnl)
 
 st.subheader("💰 RESULT")
