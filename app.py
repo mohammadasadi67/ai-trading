@@ -4,7 +4,7 @@ import numpy as np
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 FINAL LIVE (MATCH TRADINGVIEW)")
+st.title("🚀 FINAL CLEAN LIVE (NO BUG)")
 
 # ======================
 # INPUT
@@ -16,12 +16,13 @@ with col1:
     end   = st.date_input("End Date")
 
 with col2:
-    capital = st.number_input("Capital ($)", value=1000)
+    capital = st.number_input("Capital ($)", value=100)
 
 # ======================
-# HISTORICAL
+# HIST DATA
 # ======================
 def get_hist(start, end):
+
     url = "https://data-api.binance.vision/api/v3/klines"
 
     start_ms = int(pd.Timestamp(start).timestamp()*1000)
@@ -67,7 +68,7 @@ def get_hist(start, end):
 df = get_hist(pd.Timestamp(start)-pd.Timedelta(days=2), end)
 
 # ======================
-# LIVE 4H (REAL)
+# LIVE (فقط کندل جاری)
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
@@ -85,9 +86,18 @@ live_df.columns = ["Time","Open","High","Low","Close"]
 live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
-# 🔥 این مهمه:
-df = df.iloc[:-1]          # حذف آخرین قدیمی
-df = pd.concat([df, live_df])  # اضافه کردن واقعی
+# 👇 فقط آخرین کندل (در حال تشکیل)
+live_candle = live_df.iloc[-1]
+
+# 👇 حذف کندل تکراری اگر وجود داشت
+if live_candle.name in df.index:
+    df = df.drop(live_candle.name)
+
+# 👇 اضافه کردن کندل لایو
+df.loc[live_candle.name] = live_candle
+
+# 👇 مرتب‌سازی
+df = df.sort_index()
 
 # ======================
 # SIGNAL
