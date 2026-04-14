@@ -6,13 +6,13 @@ import requests
 st.set_page_config(layout="wide")
 
 # ======================
-# AUTO REFRESH 1s
+# AUTO REFRESH (ملایم)
 # ======================
 st.markdown("""
 <script>
 setTimeout(function(){
     window.location.reload();
-}, 1000);
+}, 3000);
 </script>
 """, unsafe_allow_html=True)
 
@@ -30,6 +30,21 @@ if "exec" not in st.session_state:
 start = st.date_input("Start Date")
 end   = st.date_input("End Date")
 capital = st.number_input("Capital", value=100)
+
+# ======================
+# LIVE PRICE (فقط نمایش)
+# ======================
+ticker = requests.get(
+    "https://api.binance.com/api/v3/ticker/price",
+    params={"symbol": "BTCUSDT"}
+).json()
+
+if "price" in ticker:
+    live_price = float(ticker["price"])
+else:
+    live_price = 0
+
+st.metric("💰 Live BTC Price", f"{live_price:,.2f}")
 
 # ======================
 # GET 4H DATA
@@ -55,58 +70,20 @@ def get_4h():
 df = get_4h()
 
 # ======================
-# LIVE PRICE SAFE
-# ======================
-ticker = requests.get(
-    "https://api.binance.com/api/v3/ticker/price",
-    params={"symbol": "BTCUSDT"}
-).json()
-
-live_price = float(ticker["price"]) if "price" in ticker else df["Close"].iloc[-1]
-
-# ======================
-# LIVE 1m DATA
-# ======================
-live = requests.get(
-    "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 30}
-).json()
-
-live_df = pd.DataFrame(live, columns=[
-    "time","open","high","low","close","volume",
-    "close_time","qav","trades","tbbav","tbqav","ignore"
-])
-
-live_df["time"] = pd.to_datetime(live_df["time"], unit="ms")
-live_df = live_df[["time","open","high","low","close"]]
-live_df.columns = ["Time","Open","High","Low","Close"]
-live_df.set_index("Time", inplace=True)
-live_df = live_df.astype(float)
-
-# ======================
-# BUILD CURRENT CANDLE
+# ساخت کندل جدید (بدون لایو)
 # ======================
 last_4h = df.index[-1]
 next_4h = last_4h + pd.Timedelta(hours=4)
 
-current = live_df[live_df.index >= last_4h]
-
-if not current.empty:
-
-    open_ = current["Open"].iloc[0]
-    high_ = max(current["High"].max(), live_price)
-    low_  = min(current["Low"].min(), live_price)
-    close_ = live_price
+# فقط اگر کندل جدید وجود نداره → بساز
+if next_4h not in df.index:
 
     new_row = pd.DataFrame({
-        "Open":[open_],
-        "High":[high_],
-        "Low":[low_],
-        "Close":[close_]
+        "Open":[df["Close"].iloc[-1]],
+        "High":[df["Close"].iloc[-1]],
+        "Low":[df["Close"].iloc[-1]],
+        "Close":[df["Close"].iloc[-1]]
     }, index=[next_4h])
-
-    if next_4h in df.index:
-        df = df.drop(next_4h)
 
     df = pd.concat([df, new_row])
     df = df.sort_index()
@@ -150,18 +127,18 @@ df_view = df[(df.index >= pd.Timestamp(start)) &
              (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
 # ======================
-# TABLE (FIX EXECUTE)
+# TABLE (Execute FIXED)
 # ======================
 table = df_view.reset_index()[[
     "Time","Open","High","Low","Close",
     "Decision","Entry","Target","PnL %"
 ]].copy()
 
-# 🔥 ID پایدار
+# id پایدار
 table["id"] = table["Time"].astype(str)
 table = table.set_index("id")
 
-# Execute پایدار
+# load execute
 table["Execute"] = [
     st.session_state.exec.get(idx, False)
     for idx in table.index
@@ -169,7 +146,7 @@ table["Execute"] = [
 
 edited = st.data_editor(table, use_container_width=True)
 
-# ذخیره تیک‌ها
+# save execute
 for idx in edited.index:
     st.session_state.exec[idx] = edited.loc[idx, "Execute"]
 
