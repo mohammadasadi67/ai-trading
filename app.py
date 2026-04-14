@@ -2,10 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import time
 
 st.set_page_config(layout="wide")
-st.title("🚀 TRUE LIVE SIGNAL (REAL TRADER MODE)")
+st.title("🚀 REAL CANDLE + LIVE CLOSE + SIGNAL")
 
 # ======================
 # INPUT
@@ -15,7 +14,7 @@ end   = st.date_input("End Date")
 capital = st.number_input("Capital", value=100)
 
 # ======================
-# GET 4H HISTORY
+# GET 4H DATA
 # ======================
 def get_4h(limit=200):
     url = "https://data-api.binance.vision/api/v3/klines"
@@ -38,41 +37,56 @@ def get_4h(limit=200):
 df = get_4h()
 
 # ======================
-# GET LIVE PRICE (1m)
+# GET LIVE DATA (چند دقیقه اخیر)
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 1}
+    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 20}
 ).json()
 
-live_price = float(live[0][4])  # Close 1m
+live_df = pd.DataFrame(live, columns=[
+    "time","open","high","low","close","volume",
+    "close_time","qav","trades","tbbav","tbqav","ignore"
+])
+
+live_df["time"] = pd.to_datetime(live_df["time"], unit="ms")
+live_df = live_df[["time","open","high","low","close"]]
+live_df.columns = ["Time","Open","High","Low","Close"]
+live_df.set_index("Time", inplace=True)
+live_df = live_df.astype(float)
 
 # ======================
-# BUILD NEW CANDLE (REAL)
+# ساخت کندل جاری
 # ======================
-last_close = df["Close"].iloc[-1]
-last_time  = df.index[-1]
+last_4h_time = df.index[-1]
+next_candle_time = last_4h_time + pd.Timedelta(hours=4)
 
-new_time = last_time + pd.Timedelta(hours=4)
+current_data = live_df[live_df.index >= last_4h_time]
 
-# 🔥 شروع کندل = قیمت لایو
-open_ = live_price
-high_ = live_price
-low_  = live_price
-close_ = live_price
+# اگر کندل جدید شروع شده
+if not current_data.empty:
 
-new_row = pd.DataFrame({
-    "Open":[open_],
-    "High":[high_],
-    "Low":[low_],
-    "Close":[close_]
-}, index=[new_time])
+    open_ = current_data["Open"].iloc[0]
+    high_ = current_data["High"].max()
+    low_  = current_data["Low"].min()
+    close_ = current_data["Close"].iloc[-1]  # 🔥 لایو
 
-df = pd.concat([df, new_row])
-df = df.sort_index()
+    new_row = pd.DataFrame({
+        "Open":[open_],
+        "High":[high_],
+        "Low":[low_],
+        "Close":[close_]
+    }, index=[next_candle_time])
+
+    # حذف قبلی اگر وجود داشت
+    if next_candle_time in df.index:
+        df = df.drop(next_candle_time)
+
+    df = pd.concat([df, new_row])
+    df = df.sort_index()
 
 # ======================
-# SIGNAL (همون لحظه)
+# SIGNAL (فقط وقتی مجازه)
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -83,9 +97,9 @@ for i in range(2, len(df)):
     prev1 = df.iloc[i-1]
     prev2 = df.iloc[i-2]
 
-    trend = prev1["Close"] > prev2["Close"]
+    trend_up = prev1["Close"] > prev2["Close"]
 
-    if trend:
+    if trend_up:
 
         entry = df["Open"].iloc[i]
         move = prev1["Close"] - prev2["Close"]
@@ -121,13 +135,21 @@ st.data_editor(table, use_container_width=True)
 balance = capital
 
 for i in range(len(table)):
+
     if table.iloc[i]["Execute"]:
 
         entry = table.iloc[i]["Entry"]
         target = table.iloc[i]["Target"]
+        close  = table.iloc[i]["Close"]
 
         if pd.notna(entry) and pd.notna(target):
-            pnl = (target - entry) / entry
+
+            # اگر به تارگت رسید
+            if close >= target:
+                pnl = (target - entry) / entry
+            else:
+                pnl = (close - entry) / entry
+
             balance *= (1 + pnl)
 
 st.metric("Final Balance", f"${balance:.2f}")
