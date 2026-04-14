@@ -11,6 +11,16 @@ st.set_page_config(layout="wide")
 st.title("🚀 PRO REALTIME TRADING PANEL")
 
 # ======================
+# AUTO RERUN (NO LOOP)
+# ======================
+if "last_run" not in st.session_state:
+    st.session_state.last_run = time.time()
+
+if time.time() - st.session_state.last_run > 2:
+    st.session_state.last_run = time.time()
+    st.rerun()
+
+# ======================
 # LOAD HISTORY
 # ======================
 @st.cache_data
@@ -78,10 +88,10 @@ if "ws_started" not in st.session_state:
 # INPUT
 # ======================
 col1, col2 = st.columns(2)
-start = col1.date_input("Start", value=st.session_state.df.index.min().date())
-end   = col2.date_input("End", value=st.session_state.df.index.max().date())
+start = col1.date_input("Start", value=st.session_state.df.index.min().date(), key="start_date")
+end   = col2.date_input("End", value=st.session_state.df.index.max().date(), key="end_date")
 
-only_trades = st.toggle("Show Only TRADE", False)
+only_trades = st.toggle("Show Only TRADE", False, key="only_trades")
 
 # ======================
 # STRATEGY
@@ -123,7 +133,7 @@ def apply_strategy(df):
     return df
 
 # ======================
-# MAIN (NO LOOP)
+# MAIN
 # ======================
 df = st.session_state.df.copy()
 
@@ -145,14 +155,14 @@ if not df.empty:
         st.metric("BTC Price", f"{st.session_state.last_price:,.0f}")
 
     # ======================
-    # SELECT ALL (FIXED)
+    # SELECT ALL (SAFE)
     # ======================
     c1, c2 = st.columns(2)
 
-    if c1.button("✅ Select All"):
+    if c1.button("✅ Select All", key="btn_select_all"):
         st.session_state.select_all = True
 
-    if c2.button("❌ Clear All"):
+    if c2.button("❌ Clear All", key="btn_clear_all"):
         st.session_state.select_all = False
 
     # ======================
@@ -167,6 +177,7 @@ if not df.empty:
     for i, (idx, row) in enumerate(rows):
 
         key = f"trade_{idx}"
+
         cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
         cols[0].write(idx.strftime("%m-%d %H:%M"))
@@ -175,33 +186,22 @@ if not df.empty:
         cols[3].write(round(row["Low"],2))
         cols[4].write(round(row["Close"],2) if pd.notna(row["Close"]) else "LIVE")
 
-        if row["Decision"] == "TRADE":
-            cols[5].markdown("🟢 TRADE")
-        else:
-            cols[5].markdown("⚪ WAIT")
+        cols[5].markdown("🟢 TRADE" if row["Decision"]=="TRADE" else "⚪ WAIT")
 
         cols[6].write(round(row["Entry"],2) if pd.notna(row["Entry"]) else "-")
         cols[7].write(round(row["Target"],2) if pd.notna(row["Target"]) else "-")
 
         if pd.notna(row["PnL %"]):
             color = "green" if row["PnL %"] > 0 else "red"
-            cols[8].markdown(
-                f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>",
-                unsafe_allow_html=True
-            )
+            cols[8].markdown(f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
         else:
             cols[8].write("-")
 
         if row["Decision"] == "TRADE":
-
-            default_val = st.session_state.select_all
-            current_val = st.session_state.get(key, default_val)
-
             cols[9].checkbox(
                 "",
-                value=current_val,
-                key=key
+                key=key,
+                value=st.session_state.get(key, st.session_state.select_all)
             )
-
         else:
             cols[9].write("—")
