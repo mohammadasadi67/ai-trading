@@ -16,7 +16,7 @@ setTimeout(function(){
 </script>
 """, unsafe_allow_html=True)
 
-st.title("🚀 LIVE TRADING SYSTEM FINAL")
+st.title("🚀 LIVE TRADING SYSTEM")
 
 # ======================
 # SESSION STATE
@@ -55,7 +55,7 @@ def get_4h():
 df = get_4h()
 
 # ======================
-# LIVE PRICE (SAFE)
+# LIVE PRICE SAFE
 # ======================
 ticker = requests.get(
     "https://api.binance.com/api/v3/ticker/price",
@@ -150,43 +150,46 @@ df_view = df[(df.index >= pd.Timestamp(start)) &
              (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
 # ======================
-# TABLE
+# TABLE (FIX EXECUTE)
 # ======================
 table = df_view.reset_index()[[
     "Time","Open","High","Low","Close",
     "Decision","Entry","Target","PnL %"
 ]].copy()
 
-# Execute با کلید Time
+# 🔥 ID پایدار
+table["id"] = table["Time"].astype(str)
+table = table.set_index("id")
+
+# Execute پایدار
 table["Execute"] = [
-    st.session_state.exec.get(str(row["Time"]), False)
-    for _, row in table.iterrows()
+    st.session_state.exec.get(idx, False)
+    for idx in table.index
 ]
 
 edited = st.data_editor(table, use_container_width=True)
 
-# ذخیره Execute
-for i in range(len(edited)):
-    key = str(edited.iloc[i]["Time"])
-    st.session_state.exec[key] = edited.iloc[i]["Execute"]
+# ذخیره تیک‌ها
+for idx in edited.index:
+    st.session_state.exec[idx] = edited.loc[idx, "Execute"]
 
 # ======================
 # RESULT
 # ======================
 balance = capital
 
-for i in range(len(edited)):
+for i, idx in enumerate(edited.index):
 
-    key = str(edited.iloc[i]["Time"])
-
-    if st.session_state.exec.get(key, False):
+    if st.session_state.exec.get(idx, False):
 
         if i < len(edited) - 1:
 
-            entry = edited.iloc[i]["Entry"]
-            target = edited.iloc[i]["Target"]
-            high = edited.iloc[i]["High"]
-            close = edited.iloc[i]["Close"]
+            row = edited.loc[idx]
+
+            entry = row["Entry"]
+            target = row["Target"]
+            high = row["High"]
+            close = row["Close"]
 
             if pd.notna(entry):
 
