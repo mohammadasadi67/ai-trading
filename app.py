@@ -42,12 +42,6 @@ def get_data():
 df = get_data()
 
 # ======================
-# STATE
-# ======================
-if "select_all" not in st.session_state:
-    st.session_state.select_all = False
-
-# ======================
 # STRATEGY
 # ======================
 df["Decision"] = "WAIT"
@@ -86,17 +80,6 @@ df_view = df[df["Decision"] == "TRADE"] if only_trades else df
 rows = list(df_view.iterrows())
 
 # ======================
-# BUTTONS
-# ======================
-col1, col2 = st.columns(2)
-
-if col1.button("✅ Select All"):
-    st.session_state.select_all = True
-
-if col2.button("❌ Clear All"):
-    st.session_state.select_all = False
-
-# ======================
 # TABLE
 # ======================
 header = st.columns([2,1,1,1,1,1,1,1,1,1])
@@ -133,18 +116,13 @@ for i, (idx, row) in enumerate(rows):
 
     if row["Decision"] == "TRADE":
 
-        # ✅ AUTO SELECT سودده
+        # فقط بار اول → سودده‌ها تیک بخورن
         if key not in st.session_state:
             st.session_state[key] = row["PnL %"] > 0
-
-        # ✅ اگر Select All زده شد override کن
-        if st.session_state.select_all:
-            st.session_state[key] = True
 
         cols[9].checkbox(
             "",
             key=key
         )
-
     else:
         cols[9].write("—")
