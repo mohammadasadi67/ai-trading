@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timedelta, date
 
 st.set_page_config(layout="wide", page_title="Professional Trading Dashboard")
-st.title("🚀 MOHAMMAD PATTERN")
+st.title("mohammad pattern")
 
 # ======================
 # DATA
@@ -40,19 +40,14 @@ def get_time_remaining():
         target = datetime(now.year, now.month, now.day, next_4h)
 
     remaining = target - now
-    return str(remaining).split(".")[0]
+    return remaining, str(remaining).split(".")[0]
 
 # ======================
 # SIDEBAR
 # ======================
 initial_capital = st.sidebar.number_input("Capital", value=1000.0)
 fee_rate = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
-
-# 🔥 فقط این قسمت تغییر کرده
-start_date = st.sidebar.date_input(
-    "Start",
-    value=date.today() - timedelta(days=7)
-)
+start_date = st.sidebar.date_input("Start", value=date(2024,1,1))
 
 # ======================
 # LOAD
@@ -63,19 +58,11 @@ df = df[df.index.date >= start_date].copy()
 if not df.empty:
 
     # ======================
-    # STATUS
+    # STATUS COLUMN
     # ======================
+    remaining, time_left = get_time_remaining()
     df["Status"] = "CLOSED"
     df.iloc[-1, df.columns.get_loc("Status")] = "LIVE"
-
-    # ======================
-    # CANDLE TYPE
-    # ======================
-    df["Candle"] = np.where(
-        df["Close"] > df["Open"],
-        "🟢 Bullish",
-        "🔴 Bearish"
-    )
 
     # ======================
     # STRATEGY
@@ -136,8 +123,9 @@ if not df.empty:
     price = df["Close"].iloc[-1]
 
     c1, c2 = st.columns([2,1])
+
     c1.metric("BTC Price", f"${price:,.2f}")
-    c2.metric("Next Candle", get_time_remaining())
+    c2.metric("Next Candle", time_left)
 
     final_balance = initial_capital * balance
 
@@ -150,21 +138,28 @@ if not df.empty:
     st.divider()
 
     # ======================
-    # TABLE
+    # TABLE (FULL)
     # ======================
     st.subheader("Trading Logs")
 
-    view_df = df.sort_index(ascending=False).copy()
-
     st.dataframe(
-        view_df,
+        df.sort_index(ascending=False),
         use_container_width=True,
-        height=600
+        height=600,
+        column_config={
+            "Open": st.column_config.NumberColumn("Open", format="$%.1f"),
+            "High": st.column_config.NumberColumn("High", format="$%.1f"),
+            "Low": st.column_config.NumberColumn("Low", format="$%.1f"),
+            "Close": st.column_config.NumberColumn("Close", format="$%.1f"),
+            "Entry": st.column_config.NumberColumn("Entry", format="$%.1f"),
+            "Target": st.column_config.NumberColumn("TP", format="$%.1f"),
+            "StopLoss": st.column_config.NumberColumn("SL", format="$%.1f"),
+            "PnL_Percent": st.column_config.NumberColumn("PnL %", format="%.2f%%"),
+            "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1),
+        }
     )
 
-# ======================
 # AUTO REFRESH
-# ======================
 st.markdown(
     "<script>setTimeout(()=>window.location.reload(),20000)</script>",
     unsafe_allow_html=True
