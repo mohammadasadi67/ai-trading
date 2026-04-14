@@ -2,10 +2,9 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 st.set_page_config(layout="wide")
-st.title("🚀 AI TRADE TABLE")
+st.title("🚀 FULL CANDLE TABLE")
 
 # ======================
 # INPUT
@@ -24,11 +23,14 @@ with col2:
 # ======================
 df = yf.download("BTC-USD", interval="4h", start=start, end=end)
 
+# فیکس ستون
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
 
 df = df[["Open","High","Low","Close","Volume"]]
-df = df.dropna()
+
+# ❗ مهم: هیچ dropna روی کل دیتا نزن
+df = df.copy()
 
 # ======================
 # INDICATORS
@@ -41,28 +43,32 @@ loss = -delta.clip(upper=0).rolling(14).mean()
 rs = gain / loss
 df["RSI"] = 100 - (100 / (1 + rs))
 
-df = df.dropna()
-
 # ======================
 # SIGNAL
 # ======================
 df["Signal"] = (df["Close"] > df["EMA200"]) & (df["RSI"] < 45)
 
 # ======================
-# ENTRY / EXIT / SL
+# ENTRY / SL / EXIT فقط برای سیگنال
 # ======================
-df["Entry"] = np.where(df["Signal"], df["Close"], np.nan)
-df["SL"] = np.where(df["Signal"], df["Close"] * 0.97, np.nan)
-df["Exit"] = np.where(df["Signal"], df["Close"] * 1.05, np.nan)
+df["Entry"] = np.nan
+df["SL"] = np.nan
+df["Exit"] = np.nan
+
+mask = df["Signal"] == True
+
+df.loc[mask, "Entry"] = df["Close"]
+df.loc[mask, "SL"] = df["Close"] * 0.97
+df.loc[mask, "Exit"] = df["Close"] * 1.05
 
 # ======================
 # TABLE (همه کندل‌ها)
 # ======================
-table = df[["Close","Signal","Entry","SL","Exit","RSI"]].copy()
+table = df[["Open","High","Low","Close","Volume","Signal","Entry","SL","Exit","RSI"]].copy()
 
 table["Trade?"] = False
 
-st.subheader("📊 Full Candle Table")
+st.subheader("📊 ALL 4H CANDLES")
 
 edited = st.data_editor(table, use_container_width=True)
 
@@ -75,6 +81,7 @@ in_trade = False
 for i in range(len(edited)):
 
     if edited["Trade?"].iloc[i] and not in_trade:
+
         entry = edited["Entry"].iloc[i]
         exit_price = edited["Exit"].iloc[i]
 
@@ -90,5 +97,4 @@ for i in range(len(edited)):
 # RESULT
 # ======================
 st.subheader("💰 RESULT")
-
 st.metric("Final Balance", f"${balance:.2f}")
