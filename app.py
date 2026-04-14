@@ -2,9 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
+import time
 
 st.set_page_config(layout="wide")
-st.title("🚀 FINAL WORKING VERSION")
+st.title("🚀 TRUE LIVE SIGNAL (REAL TRADER MODE)")
 
 # ======================
 # INPUT
@@ -14,7 +15,7 @@ end   = st.date_input("End Date")
 capital = st.number_input("Capital", value=100)
 
 # ======================
-# GET 4H DATA
+# GET 4H HISTORY
 # ======================
 def get_4h(limit=200):
     url = "https://data-api.binance.vision/api/v3/klines"
@@ -37,50 +38,62 @@ def get_4h(limit=200):
 df = get_4h()
 
 # ======================
-# FORCE ADD LIVE CANDLE
+# GET LIVE PRICE (1m)
 # ======================
-live = get_4h(limit=1)  # 👈 آخرین کندل
+live = requests.get(
+    "https://data-api.binance.vision/api/v3/klines",
+    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 1}
+).json()
 
-last_time = live.index[-1]
+live_price = float(live[0][4])  # Close 1m
 
-# اگر این کندل تو df نیست → اضافه کن
-if last_time not in df.index:
-    df.loc[last_time] = live.iloc[-1]
-else:
-    # آپدیت کن
-    df.loc[last_time] = live.iloc[-1]
+# ======================
+# BUILD NEW CANDLE (REAL)
+# ======================
+last_close = df["Close"].iloc[-1]
+last_time  = df.index[-1]
 
+new_time = last_time + pd.Timedelta(hours=4)
+
+# 🔥 شروع کندل = قیمت لایو
+open_ = live_price
+high_ = live_price
+low_  = live_price
+close_ = live_price
+
+new_row = pd.DataFrame({
+    "Open":[open_],
+    "High":[high_],
+    "Low":[low_],
+    "Close":[close_]
+}, index=[new_time])
+
+df = pd.concat([df, new_row])
 df = df.sort_index()
 
 # ======================
-# SIGNAL
+# SIGNAL (همون لحظه)
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
 df["Target"] = np.nan
-df["PnL %"] = np.nan
 
 for i in range(2, len(df)):
 
     prev1 = df.iloc[i-1]
     prev2 = df.iloc[i-2]
 
-    if prev1["Close"] > prev2["Close"]:
+    trend = prev1["Close"] > prev2["Close"]
+
+    if trend:
 
         entry = df["Open"].iloc[i]
         move = prev1["Close"] - prev2["Close"]
         target = entry + move
 
-        high = df["High"].iloc[i]
-        close = df["Close"].iloc[i]
-
-        exit_price = target if high >= target else close
-        pnl = (exit_price - entry) / entry * 100
-
         df.iloc[i, df.columns.get_loc("Decision")] = "TRADE"
         df.iloc[i, df.columns.get_loc("Entry")] = entry
         df.iloc[i, df.columns.get_loc("Target")] = target
-        df.iloc[i, df.columns.get_loc("PnL %")] = pnl
 
 # ======================
 # FILTER
@@ -95,7 +108,7 @@ df_view = df[(df.index >= pd.Timestamp(start)) &
 # ======================
 table = df_view.reset_index()[[
     "Time","Open","High","Low","Close",
-    "Decision","Entry","Target","PnL %"
+    "Decision","Entry","Target"
 ]].copy()
 
 table["Execute"] = False
@@ -109,8 +122,12 @@ balance = capital
 
 for i in range(len(table)):
     if table.iloc[i]["Execute"]:
-        pnl = table.iloc[i]["PnL %"]
-        if pd.notna(pnl):
-            balance *= (1 + pnl/100)
+
+        entry = table.iloc[i]["Entry"]
+        target = table.iloc[i]["Target"]
+
+        if pd.notna(entry) and pd.notna(target):
+            pnl = (target - entry) / entry
+            balance *= (1 + pnl)
 
 st.metric("Final Balance", f"${balance:.2f}")
