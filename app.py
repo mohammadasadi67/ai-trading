@@ -93,7 +93,7 @@ for col, t in zip(header, titles):
 # ======================
 for i, (idx, row) in enumerate(rows):
 
-    # ✅ کلید یکتا (رفع کامل ارور)
+    # ✅ کلید یکتا (حل کامل ارور)
     key = f"trade_{i}_{idx.strftime('%Y%m%d%H%M')}"
 
     cols = st.columns([2,1,1,1,1,1,1,1,1,1])
