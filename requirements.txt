@@ -5,3 +5,4 @@ numpy
 streamlit-autorefresh
 stable-baselines3
 gymnasium
+websocket-client
