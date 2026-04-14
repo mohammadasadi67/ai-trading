@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🚀 FULL 4H SIGNAL SYSTEM")
+st.title("🚀 FULL 4H SIGNAL + LIVE")
 
 # ======================
 # INPUT
@@ -45,7 +45,6 @@ for i in range(2, len(df)):
     if trend:
 
         entry = df["Open"].iloc[i]
-
         prev_move = prev1["Close"] - prev2["Close"]
         target = entry + prev_move
 
@@ -54,16 +53,20 @@ for i in range(2, len(df)):
         df.at[df.index[i], "Target"] = target
 
 # ======================
-# ADD LIVE CANDLE (جدید)
+# LIVE DATA (1m)
 # ======================
 live = yf.download("BTC-USD", period="1d", interval="1m")
 
 if isinstance(live.columns, pd.MultiIndex):
     live.columns = live.columns.get_level_values(0)
 
+# ======================
+# ADD LIVE CANDLE (بدون ارور timezone)
+# ======================
 if not live.empty:
 
-    now = pd.Timestamp.now()
+    # هم‌تراز timezone
+    now = pd.Timestamp.now(tz=live.index.tz)
 
     hour_block = (now.hour // 4) * 4
     candle_start = now.replace(hour=hour_block, minute=0, second=0, microsecond=0)
@@ -104,7 +107,7 @@ st.subheader("📊 ALL 4H CANDLES + LIVE")
 edited = st.data_editor(table, use_container_width=True)
 
 # ======================
-# RESULT
+# SIMULATION (FIXED)
 # ======================
 balance = capital
 
@@ -121,5 +124,8 @@ for i in range(len(edited_df)):
             pnl = (target - entry) / entry
             balance *= (1 + pnl)
 
+# ======================
+# RESULT
+# ======================
 st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
