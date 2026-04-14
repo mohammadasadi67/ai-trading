@@ -2,32 +2,29 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-from streamlit_autorefresh import st_autorefresh
+from datetime import datetime
 
-st_autorefresh(interval=60 * 1000, key="refresh")
-
-st.set_page_config(layout="wide")
-st.title("🚀 AI TRADER PRO")
+st.title("AI TRADER PRO")
 
 # ======================
 # INPUT
 # ======================
-col1, col2 = st.columns(2)
+start = st.date_input("Start", datetime(2026,1,1))
+end   = st.date_input("End", datetime.now())
 
-with col1:
-    start = st.date_input("Start", datetime(2026,1,1))
-    end = st.date_input("End", datetime.now())
-
-with col2:
-    capital = st.number_input("Capital ($)", value=1000)
+capital = st.number_input("Capital ($)", value=1000)
 
 # ======================
-# DATA (UTC FIX)
+# DATA
 # ======================
 df = yf.download("BTC-USD", interval="4h", start=start, end=end)
 
-df.index = df.index.tz_localize(None)
+# 💥 مهم: فیکس ستون‌ها
+if isinstance(df.columns, pd.MultiIndex):
+    df.columns = df.columns.get_level_values(0)
+
+# فقط ستون‌های لازم
+df = df[["Open","High","Low","Close","Volume"]]
 
 df = df.dropna()
 
@@ -37,51 +34,42 @@ df = df.dropna()
 df["EMA50"] = df["Close"].ewm(span=50).mean()
 df["EMA200"] = df["Close"].ewm(span=200).mean()
 
+# RSI
 delta = df["Close"].diff()
 gain = delta.clip(lower=0).rolling(14).mean()
 loss = -delta.clip(upper=0).rolling(14).mean()
 rs = gain / loss
 df["RSI"] = 100 - (100 / (1 + rs))
 
-# ======================
-# SIGNAL LOGIC
-# ======================
-df["buy"] = (df["Close"] > df["EMA200"]) & (df["RSI"] < 45)
+df = df.dropna()
 
 # ======================
-# ENTRY / SL / EXIT
+# سیگنال (فیکس شده)
 # ======================
-df["Entry"] = np.where(df["buy"], df["Close"], np.nan)
-df["SL"] = df["Close"] * 0.97
-df["TP"] = df["Close"] * 1.05
+close = df["Close"].astype(float)
+ema200 = df["EMA200"].astype(float)
+rsi = df["RSI"].astype(float)
+
+df["buy"] = (close > ema200) & (rsi < 45)
 
 # ======================
-# LIVE FIX (کندل امروز)
+# ENTRY / SL / TP
 # ======================
-now = datetime.utcnow()
-if df.index[-1].date() < now.date():
-    last_price = yf.download("BTC-USD", period="1d", interval="1m")["Close"].iloc[-1]
-else:
-    last_price = df["Close"].iloc[-1]
+df["Entry"] = np.where(df["buy"], close, np.nan)
+df["SL"] = close * 0.97
+df["TP"] = close * 1.05
 
 # ======================
 # TABLE
 # ======================
-table = df[["Close","Entry","SL","TP","RSI"]].copy()
-table = table.dropna(subset=["Entry"])
+table = df[["Close","Entry","SL","TP","RSI"]].dropna(subset=["Entry"])
 
 table["Trade?"] = False
 
 # ======================
 # UI
 # ======================
-col1, col2, col3 = st.columns(3)
-
-col1.metric("💰 Price", f"{last_price:.2f}")
-col2.metric("📊 Signals", len(table))
-col3.metric("💼 Capital", capital)
-
-st.subheader("📊 Trade Table")
+st.subheader("Trade Table")
 
 edited = st.data_editor(table, use_container_width=True)
 
@@ -94,16 +82,8 @@ for i in range(len(edited)):
     if edited["Trade?"].iloc[i]:
         entry = edited["Entry"].iloc[i]
         tp = edited["TP"].iloc[i]
-        sl = edited["SL"].iloc[i]
 
-        # فرض ساده
-        if tp > entry:
-            profit = (tp - entry) / entry
-        else:
-            profit = (sl - entry) / entry
-
+        profit = (tp - entry) / entry
         balance *= (1 + profit)
-
-st.subheader("💰 Result")
 
 st.metric("Final Balance", f"${balance:.2f}")
