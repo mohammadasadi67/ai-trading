@@ -1,14 +1,57 @@
-# ======================
-# RL Logic Processing (Fixed Version)
-# ======================
+import streamlit as st
+import pandas as pd
+import numpy as np
+import requests
+from datetime import datetime, timedelta, date
+
+# 1. Page Config (Must be first)
+st.set_page_config(layout="wide", page_title="RL Trading Panel")
+
+# 2. Define Functions (Before calling them)
+def get_live_data():
+    url = "https://data-api.binance.vision/api/v3/klines"
+    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 200}
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        df = pd.DataFrame(data, columns=[
+            "time","open","high","low","close","volume",
+            "close_time","qav","trades","tbbav","tbqav","ignore"
+        ])
+        df["time"] = pd.to_datetime(df["time"], unit="ms")
+        df = df[["time","open","high","low","close"]]
+        df.columns = ["Time","Open","High","Low","Close"]
+        df.set_index("Time", inplace=True)
+        df = df.astype(float)
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+def get_time_remaining():
+    now = datetime.utcnow()
+    next_4h = (now.hour // 4 + 1) * 4
+    if next_4h >= 24:
+        target_t = datetime(now.year, now.month, now.day) + timedelta(days=1)
+    else:
+        target_t = datetime(now.year, now.month, now.day, next_4h)
+    remaining = target_t - now
+    return str(remaining).split(".")[0]
+
+# 3. Sidebar
+st.sidebar.title("Settings")
+initial_capital = st.sidebar.number_input("Initial Capital ($)", value=1000.0, step=100.0)
+start_date = st.sidebar.date_input("Start Date", value=date(2024, 1, 1))
+
+# 4. Main Logic
 df = get_live_data()
 
 if not df.empty:
     df_filtered = df[df.index.date >= start_date].copy()
     
     if df_filtered.empty:
-        st.warning("No data found for the selected date range.")
+        st.warning("No data found for selected range.")
     else:
+        # Initialize Columns
         df_filtered["Signal"] = "WAIT"
         df_filtered["Entry"] = np.nan
         df_filtered["Target"] = np.nan
@@ -19,44 +62,73 @@ if not df.empty:
         best_multiplier = 1.0
         total_bal_multiplier = 1.0
 
+        # Calculation Loop
         for i in range(2, len(df_filtered)):
             p1, p2 = df_filtered.iloc[i-1], df_filtered.iloc[i-2]
             
-            # --- FIXED LOGIC ---
-            # Calculations are based ONLY on p1 and p2 (Completed candles)
-            # This makes the Entry and Target constant throughout the current candle.
-            
             if p1["Close"] > p2["Close"]:
-                # Entry is locked at the OPEN of the current candle
-                fixed_entry = df_filtered["Open"].iloc[i] 
-                
-                # Target is locked based on previous candles' move
-                base_diff = p1["Close"] - p2["Close"]
-                fixed_target = fixed_entry + (base_diff * best_multiplier)
-                
-                # StopLoss is locked at previous candle's Low
+                # FIXED VALUES: Based on completed candles (p1, p2)
+                # These won't change until the next 4H candle opens
+                fixed_entry = df_filtered["Open"].iloc[i]
+                fixed_target = fixed_entry + ((p1["Close"] - p2["Close"]) * best_multiplier)
                 fixed_sl = p1["Low"]
                 
-                # Current price only affects PnL, not the Signal/Target
+                # LIVE VALUE: Only for PnL
                 curr_close = df_filtered["Close"].iloc[i]
                 pnl_raw = (curr_close - fixed_entry) / fixed_entry
                 
-                # Update DataFrame
                 df_filtered.iloc[i, df_filtered.columns.get_loc("Signal")] = "BUY"
                 df_filtered.iloc[i, df_filtered.columns.get_loc("Entry")] = fixed_entry
                 df_filtered.iloc[i, df_filtered.columns.get_loc("Target")] = fixed_target
                 df_filtered.iloc[i, df_filtered.columns.get_loc("StopLoss")] = fixed_sl
                 
-                # Confidence remains stable
+                # Confidence Logic
                 conf = min(0.98, 0.65 + (best_multiplier * 0.1)) if pnl_raw > 0 else max(0.40, 0.60 - abs(best_multiplier * 0.05))
                 df_filtered.iloc[i, df_filtered.columns.get_loc("Confidence")] = conf
                 df_filtered.iloc[i, df_filtered.columns.get_loc("PnL_Percent")] = pnl_raw * 100
                 
-                # Learning update (only for previous candles to avoid feedback loops)
+                # Learning step (only on closed candles)
                 if i < len(df_filtered) - 1:
-                    if pnl_raw > 0:
-                        best_multiplier = min(2.5, best_multiplier + 0.05)
-                    else:
-                        best_multiplier = max(0.5, best_multiplier - 0.1)
+                    if pnl_raw > 0: best_multiplier = min(2.5, best_multiplier + 0.05)
+                    else: best_multiplier = max(0.5, best_multiplier - 0.1)
 
                 total_bal_multiplier *= (1 + pnl_raw)
+
+        # 5. Header UI
+        curr_p = df_filtered["Close"].iloc[-1]
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.markdown(f"<div style='background-color:#1e1e1e;padding:15px;border-radius:10px;border-left:5px solid #4CAF50;'><p style='color:#888;margin:0;'>BTC PRICE</p><h1 style='margin:0;'>${curr_p:,.2f}</h1></div>", unsafe_allow_html=True)
+        with c2:
+            st.markdown(f"<div style='background-color:#1e1e1e;padding:15px;border-radius:10px;border-left:5px solid #ffca28;'><p style='color:#888;margin:0;'>CANDLE TIMER</p><h1 style='margin:0;color:#ffca28;'>{get_time_remaining()}</h1></div>", unsafe_allow_html=True)
+
+        st.write("")
+        final_balance = initial_capital * total_bal_multiplier
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Start Balance", f"${initial_capital:,.0f}")
+        m2.metric("Current Balance", f"${final_balance:,.2f}", delta=f"{(total_bal_multiplier-1)*100:.2f}%")
+        m3.metric("Net Profit", f"${final_balance - initial_capital:,.2f}")
+
+        st.divider()
+
+        # 6. Trading Table
+        st.subheader("Trading Logs (Fixed Signals)")
+        view_df = df_filtered.sort_index(ascending=False).copy()
+        st.dataframe(
+            view_df,
+            use_container_width=True,
+            height=450,
+            column_config={
+                "Signal": "Signal",
+                "Confidence": st.column_config.ProgressColumn("Confidence", format="%.0f%%", min_value=0.0, max_value=1.0),
+                "Entry": st.column_config.NumberColumn("Entry", format="$%.1f"),
+                "Target": st.column_config.NumberColumn("Target (TP)", format="$%.1f"),
+                "StopLoss": st.column_config.NumberColumn("Stop (SL)", format="$%.1f"),
+                "PnL_Percent": st.column_config.NumberColumn("PnL %", format="%.2f%%"),
+                "Close": st.column_config.NumberColumn("Price", format="$%.1f"),
+                "Open": None, "High": None, "Low": None
+            }
+        )
+
+# Auto-Refresh
+st.markdown("<script>setTimeout(function(){window.location.reload();}, 20000);</script>", unsafe_allow_html=True)
