@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🚀 FULL CANDLE TABLE")
+st.title("🚀 FULL 4H TRADING TABLE")
 
 # ======================
 # INPUT
@@ -23,14 +23,11 @@ with col2:
 # ======================
 df = yf.download("BTC-USD", interval="4h", start=start, end=end)
 
-# فیکس ستون
+# Fix MultiIndex
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
 
 df = df[["Open","High","Low","Close","Volume"]]
-
-# ❗ مهم: هیچ dropna روی کل دیتا نزن
-df = df.copy()
 
 # ======================
 # INDICATORS
@@ -49,7 +46,7 @@ df["RSI"] = 100 - (100 / (1 + rs))
 df["Signal"] = (df["Close"] > df["EMA200"]) & (df["RSI"] < 45)
 
 # ======================
-# ENTRY / SL / EXIT فقط برای سیگنال
+# ENTRY / SL / EXIT
 # ======================
 df["Entry"] = np.nan
 df["SL"] = np.nan
@@ -62,11 +59,20 @@ df.loc[mask, "SL"] = df["Close"] * 0.97
 df.loc[mask, "Exit"] = df["Close"] * 1.05
 
 # ======================
+# DECISION TEXT
+# ======================
+df["Decision"] = np.where(df["Signal"], "TRADE", "WAIT")
+
+# ======================
 # TABLE (همه کندل‌ها)
 # ======================
-table = df[["Open","High","Low","Close","Volume","Signal","Entry","SL","Exit","RSI"]].copy()
+table = df[[
+    "Open","High","Low","Close","Volume",
+    "Signal","Decision","Entry","SL","Exit","RSI"
+]].copy()
 
-table["Trade?"] = False
+# تیک اجرای معامله
+table["Execute"] = False
 
 st.subheader("📊 ALL 4H CANDLES")
 
@@ -80,7 +86,7 @@ in_trade = False
 
 for i in range(len(edited)):
 
-    if edited["Trade?"].iloc[i] and not in_trade:
+    if edited["Execute"].iloc[i] and not in_trade:
 
         entry = edited["Entry"].iloc[i]
         exit_price = edited["Exit"].iloc[i]
@@ -90,11 +96,12 @@ for i in range(len(edited)):
             balance *= (1 + profit)
             in_trade = True
 
-    if not edited["Trade?"].iloc[i]:
+    if not edited["Execute"].iloc[i]:
         in_trade = False
 
 # ======================
 # RESULT
 # ======================
 st.subheader("💰 RESULT")
+
 st.metric("Final Balance", f"${balance:.2f}")
