@@ -23,55 +23,60 @@ with col2:
 # ======================
 df = yf.download("BTC-USD", interval="4h", start=start, end=end)
 
-# Fix MultiIndex
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
 
 df = df[["Open","High","Low","Close","Volume"]]
 
 # ======================
-# INDICATORS
+# INDICATOR (فقط EMA)
 # ======================
 df["EMA200"] = df["Close"].ewm(span=200).mean()
 
-delta = df["Close"].diff()
-gain = delta.clip(lower=0).rolling(14).mean()
-loss = -delta.clip(upper=0).rolling(14).mean()
-rs = gain / loss
-df["RSI"] = 100 - (100 / (1 + rs))
+# ======================
+# SIGNAL (با حجم)
+# ======================
+df["Vol_Avg"] = df["Volume"].rolling(20).mean()
+df["Vol_Signal"] = df["Volume"] > df["Vol_Avg"]
+
+df["Signal"] = (df["Close"] > df["EMA200"]) & df["Vol_Signal"]
 
 # ======================
-# SIGNAL
-# ======================
-df["Signal"] = (df["Close"] > df["EMA200"]) & (df["RSI"] < 45)
-
-# ======================
-# ENTRY / SL / EXIT
+# ENTRY / EXIT / SL
 # ======================
 df["Entry"] = np.nan
-df["SL"] = np.nan
 df["Exit"] = np.nan
+df["SL"] = np.nan
 
 mask = df["Signal"] == True
 
 df.loc[mask, "Entry"] = df["Close"]
-df.loc[mask, "SL"] = df["Close"] * 0.97
 df.loc[mask, "Exit"] = df["Close"] * 1.05
+df.loc[mask, "SL"] = df["Close"] * 0.97
 
 # ======================
-# DECISION TEXT
+# سود/ضرر درصدی
+# ======================
+df["PnL %"] = np.where(
+    df["Signal"],
+    ((df["Exit"] - df["Entry"]) / df["Entry"]) * 100,
+    np.nan
+)
+
+# ======================
+# DECISION
 # ======================
 df["Decision"] = np.where(df["Signal"], "TRADE", "WAIT")
 
 # ======================
-# TABLE (همه کندل‌ها)
+# TABLE
 # ======================
 table = df[[
     "Open","High","Low","Close","Volume",
-    "Signal","Decision","Entry","SL","Exit","RSI"
+    "Vol_Signal","Signal","Decision",
+    "Entry","SL","Exit","PnL %"
 ]].copy()
 
-# تیک اجرای معامله
 table["Execute"] = False
 
 st.subheader("📊 ALL 4H CANDLES")
