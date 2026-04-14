@@ -6,7 +6,7 @@ import requests
 st.set_page_config(layout="wide")
 
 # ======================
-# AUTO REFRESH (ملایم)
+# AUTO REFRESH (آروم)
 # ======================
 st.markdown("""
 <script>
@@ -32,21 +32,6 @@ end   = st.date_input("End Date")
 capital = st.number_input("Capital", value=100)
 
 # ======================
-# LIVE PRICE (فقط نمایش)
-# ======================
-ticker = requests.get(
-    "https://api.binance.com/api/v3/ticker/price",
-    params={"symbol": "BTCUSDT"}
-).json()
-
-if "price" in ticker:
-    live_price = float(ticker["price"])
-else:
-    live_price = 0
-
-st.metric("💰 Live BTC Price", f"{live_price:,.2f}")
-
-# ======================
 # GET 4H DATA
 # ======================
 def get_4h():
@@ -70,23 +55,20 @@ def get_4h():
 df = get_4h()
 
 # ======================
-# ساخت کندل جدید (بدون لایو)
+# ساخت کندل جدید (ثابت)
 # ======================
 last_4h = df.index[-1]
 next_4h = last_4h + pd.Timedelta(hours=4)
 
-# فقط اگر کندل جدید وجود نداره → بساز
 if next_4h not in df.index:
-
     new_row = pd.DataFrame({
         "Open":[df["Close"].iloc[-1]],
         "High":[df["Close"].iloc[-1]],
         "Low":[df["Close"].iloc[-1]],
-        "Close":[df["Close"].iloc[-1]]
+        "Close":[np.nan]  # ❗ مهم: خالی تا بسته شدن
     }, index=[next_4h])
 
-    df = pd.concat([df, new_row])
-    df = df.sort_index()
+    df = pd.concat([df, new_row]).sort_index()
 
 # ======================
 # SIGNAL + PnL
@@ -96,7 +78,7 @@ df["Entry"] = np.nan
 df["Target"] = np.nan
 df["PnL %"] = np.nan
 
-for i in range(2, len(df)):
+for i in range(2, len(df)-1):  # ❗ کندل آخر رو حساب نکن
 
     prev1 = df.iloc[i-1]
     prev2 = df.iloc[i-2]
@@ -127,18 +109,18 @@ df_view = df[(df.index >= pd.Timestamp(start)) &
              (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
 # ======================
-# TABLE (Execute FIXED)
+# TABLE
 # ======================
 table = df_view.reset_index()[[
     "Time","Open","High","Low","Close",
     "Decision","Entry","Target","PnL %"
 ]].copy()
 
-# id پایدار
+# ID پایدار
 table["id"] = table["Time"].astype(str)
 table = table.set_index("id")
 
-# load execute
+# Execute
 table["Execute"] = [
     st.session_state.exec.get(idx, False)
     for idx in table.index
@@ -146,7 +128,7 @@ table["Execute"] = [
 
 edited = st.data_editor(table, use_container_width=True)
 
-# save execute
+# ذخیره
 for idx in edited.index:
     st.session_state.exec[idx] = edited.loc[idx, "Execute"]
 
