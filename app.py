@@ -40,7 +40,7 @@ def get_time_remaining():
         target = datetime(now.year, now.month, now.day, next_4h)
 
     remaining = target - now
-    return remaining, str(remaining).split(".")[0]
+    return str(remaining).split(".")[0]
 
 # ======================
 # SIDEBAR
@@ -60,14 +60,18 @@ if not df.empty:
     # ======================
     # STATUS
     # ======================
-    remaining, time_left = get_time_remaining()
     df["Status"] = "CLOSED"
     df.iloc[-1, df.columns.get_loc("Status")] = "LIVE"
 
     # ======================
     # CANDLE TYPE + O→C
     # ======================
-    df["Candle"] = np.where(df["Close"] > df["Open"], "Bullish", "Bearish")
+    df["Candle"] = np.where(
+        df["Close"] > df["Open"],
+        "🟢 Bullish",
+        "🔴 Bearish"
+    )
+
     df["O→C"] = df["Open"].round(1).astype(str) + " → " + df["Close"].round(1).astype(str)
 
     # ======================
@@ -130,7 +134,7 @@ if not df.empty:
 
     c1, c2 = st.columns([2,1])
     c1.metric("BTC Price", f"${price:,.2f}")
-    c2.metric("Next Candle", time_left)
+    c2.metric("Next Candle", get_time_remaining())
 
     final_balance = initial_capital * balance
 
@@ -143,41 +147,38 @@ if not df.empty:
     st.divider()
 
     # ======================
-    # STYLE (رنگی)
-    # ======================
-    def color_candle(val):
-        if val == "Bullish":
-            return "color: #00ff9d; font-weight: bold;"
-        else:
-            return "color: #ff4d4d; font-weight: bold;"
-
-    styled_df = df.sort_index(ascending=False).style.applymap(
-        color_candle, subset=["Candle"]
-    )
-
-    # ======================
     # TABLE
     # ======================
     st.subheader("Trading Logs")
 
+    view_df = df.sort_index(ascending=False).copy()
+
     st.dataframe(
-        styled_df,
+        view_df,
         use_container_width=True,
         height=600,
         column_config={
             "O→C": "Open → Close",
             "Candle": "Type",
+
             "High": st.column_config.NumberColumn("High", format="$%.1f"),
             "Low": st.column_config.NumberColumn("Low", format="$%.1f"),
+
             "Entry": st.column_config.NumberColumn("Entry", format="$%.1f"),
             "Target": st.column_config.NumberColumn("TP", format="$%.1f"),
             "StopLoss": st.column_config.NumberColumn("SL", format="$%.1f"),
+
             "PnL_Percent": st.column_config.NumberColumn("PnL %", format="%.2f%%"),
-            "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1),
+
+            "Confidence": st.column_config.ProgressColumn(
+                "Confidence", min_value=0, max_value=1
+            ),
         }
     )
 
+# ======================
 # AUTO REFRESH
+# ======================
 st.markdown(
     "<script>setTimeout(()=>window.location.reload(),20000)</script>",
     unsafe_allow_html=True
