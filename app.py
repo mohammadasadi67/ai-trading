@@ -80,7 +80,7 @@ df_view = df[df["Decision"] == "TRADE"] if only_trades else df
 rows = list(df_view.iterrows())
 
 # ======================
-# TABLE
+# TABLE HEADER
 # ======================
 header = st.columns([2,1,1,1,1,1,1,1,1,1])
 titles = ["Time","Open","High","Low","Close","Signal","Entry","Target","PnL %","✔"]
@@ -88,9 +88,13 @@ titles = ["Time","Open","High","Low","Close","Signal","Entry","Target","PnL %","
 for col, t in zip(header, titles):
     col.markdown(f"**{t}**")
 
+# ======================
+# TABLE ROWS
+# ======================
 for i, (idx, row) in enumerate(rows):
 
-    key = f"trade_{idx.strftime('%Y%m%d%H%M')}"
+    # ✅ کلید یکتا (رفع کامل ارور)
+    key = f"trade_{i}_{idx.strftime('%Y%m%d%H%M')}"
 
     cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
@@ -114,9 +118,12 @@ for i, (idx, row) in enumerate(rows):
     else:
         cols[8].write("-")
 
+    # ======================
+    # CHECKBOX
+    # ======================
     if row["Decision"] == "TRADE":
 
-        # فقط بار اول → سودده‌ها تیک
+        # فقط بار اول مقداردهی
         if key not in st.session_state:
             st.session_state[key] = row["PnL %"] > 0
 
