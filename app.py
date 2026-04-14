@@ -15,7 +15,7 @@ col1, col2 = st.columns(2)
 
 with col1:
     start = st.date_input("Start")
-    end = st.date_input("End")
+    end   = st.date_input("End")
 
 with col2:
     capital = st.number_input("Capital ($)", value=1000)
@@ -55,30 +55,37 @@ df = df.dropna()
 # ======================
 # SIGNAL
 # ======================
-df["buy"] = (df["Close"] > df["EMA200"]) & (df["RSI"] < 45)
+df["buy"] = (df["Close"].astype(float) > df["EMA200"].astype(float)) & (df["RSI"].astype(float) < 45)
 
 df["Entry"] = np.where(df["buy"], df["Close"], np.nan)
 df["SL"] = df["Close"] * 0.97
 df["TP"] = df["Close"] * 1.05
 
 # ======================
-# LIVE PRICE
+# LIVE PRICE (SAFE)
 # ======================
 live = yf.download("BTC-USD", period="1d", interval="1m")
 
-if not live.empty:
-    last_price = float(live["Close"].iloc[-1])
-    now = datetime.now(pytz.timezone("Asia/Baghdad"))
+if isinstance(live.columns, pd.MultiIndex):
+    live.columns = live.columns.get_level_values(0)
 
-    new_row = {col: np.nan for col in df.columns}
-    new_row["Close"] = last_price
-    new_row["Open"] = last_price
-    new_row["High"] = last_price
-    new_row["Low"] = last_price
-
-    df.loc[now] = new_row
+if "Close" in live and not live["Close"].dropna().empty:
+    last_price = float(live["Close"].dropna().iloc[-1])
 else:
-    last_price = df["Close"].iloc[-1]
+    last_price = float(df["Close"].iloc[-1])
+
+# ======================
+# ADD LIVE ROW (SAFE)
+# ======================
+now = datetime.now(pytz.timezone("Asia/Baghdad"))
+
+new_row = {col: np.nan for col in df.columns}
+new_row["Close"] = last_price
+new_row["Open"] = last_price
+new_row["High"] = last_price
+new_row["Low"] = last_price
+
+df.loc[now] = new_row
 
 # ======================
 # TABLE
@@ -91,7 +98,7 @@ st.subheader("📊 Trade Table")
 edited = st.data_editor(table, use_container_width=True)
 
 # ======================
-# SIMULATION (REAL FIX)
+# REAL SIMULATION (FIXED)
 # ======================
 balance = capital
 in_trade = False
@@ -101,12 +108,10 @@ for i in range(len(edited)):
     if edited["Trade?"].iloc[i] and not in_trade:
         entry = edited["Entry"].iloc[i]
         tp = edited["TP"].iloc[i]
-        sl = edited["SL"].iloc[i]
 
-        # ساده: فرض TP
         profit = (tp - entry) / entry
-
         balance *= (1 + profit)
+
         in_trade = True
 
     if not edited["Trade?"].iloc[i]:
