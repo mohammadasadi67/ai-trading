@@ -4,7 +4,7 @@ import numpy as np
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 REAL LIVE TRADING SYSTEM (BINANCE FINAL)")
+st.title("🚀 TRUE LIVE SIGNAL (REAL TIME)")
 
 # ======================
 # INPUT
@@ -19,21 +19,21 @@ with col2:
     capital = st.number_input("Capital ($)", value=1000)
 
 # ======================
-# HISTORICAL DATA
+# HISTORICAL 4H
 # ======================
-def get_klines_range(symbol="BTCUSDT", interval="4h", start=None, end=None):
+def get_4h(symbol="BTCUSDT", start=None, end=None):
 
     url = "https://data-api.binance.vision/api/v3/klines"
 
-    start_ms = int(pd.Timestamp(start).timestamp() * 1000)
-    end_ms   = int((pd.Timestamp(end) + pd.Timedelta(days=1)).timestamp() * 1000)
+    start_ms = int(pd.Timestamp(start).timestamp()*1000)
+    end_ms   = int((pd.Timestamp(end)+pd.Timedelta(days=1)).timestamp()*1000)
 
     all_data = []
 
     while True:
         params = {
             "symbol": symbol,
-            "interval": interval,
+            "interval": "4h",
             "startTime": start_ms,
             "endTime": end_ms,
             "limit": 1000
@@ -46,12 +46,10 @@ def get_klines_range(symbol="BTCUSDT", interval="4h", start=None, end=None):
 
         all_data.extend(data)
 
-        last_time = data[-1][0]
-
         if len(data) < 1000:
             break
 
-        start_ms = last_time + 1
+        start_ms = data[-1][0] + 1
 
     df = pd.DataFrame(all_data, columns=[
         "time","open","high","low","close","volume",
@@ -59,7 +57,6 @@ def get_klines_range(symbol="BTCUSDT", interval="4h", start=None, end=None):
     ])
 
     df["time"] = pd.to_datetime(df["time"], unit="ms")
-
     df = df[["time","open","high","low","close"]]
     df.columns = ["Time","Open","High","Low","Close"]
 
@@ -68,18 +65,18 @@ def get_klines_range(symbol="BTCUSDT", interval="4h", start=None, end=None):
 
     return df
 
-df = get_klines_range(start=start, end=end)
-
-if df.empty:
-    st.error("No data")
-    st.stop()
+# ======================
+# LOAD DATA + BUFFER
+# ======================
+real_start = pd.Timestamp(start) - pd.Timedelta(days=2)
+df = get_4h(start=real_start, end=end)
 
 # ======================
-# LIVE CANDLE (REAL FIX)
+# LIVE 1m DATA
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "4h", "limit": 2}
+    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 300}
 ).json()
 
 live_df = pd.DataFrame(live, columns=[
@@ -93,15 +90,32 @@ live_df.columns = ["Time","Open","High","Low","Close"]
 live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
-# کندل در حال تشکیل
-current_candle = live_df.iloc[-1:]
+# ======================
+# ساخت کندل 4H واقعی (در حال تشکیل)
+# ======================
+last_4h = df.index[-1]
+next_4h = last_4h + pd.Timedelta(hours=4)
 
-# حذف آخرین کندل قدیمی و جایگزینی با لایو
-df = df.iloc[:-1]
-df = pd.concat([df, current_candle])
+current = live_df[live_df.index >= next_4h]
+
+if not current.empty:
+
+    open_ = current["Open"].iloc[0]
+    high_ = current["High"].max()
+    low_  = current["Low"].min()
+    close_ = current["Close"].iloc[-1]
+
+    new_candle = pd.DataFrame({
+        "Open":[open_],
+        "High":[high_],
+        "Low":[low_],
+        "Close":[close_]
+    }, index=[next_4h])
+
+    df = pd.concat([df, new_candle])
 
 # ======================
-# SIGNAL LOGIC
+# SIGNAL
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -119,16 +133,13 @@ for i in range(2, len(df)):
 
         entry = df["Open"].iloc[i]
 
-        prev_move = prev1["Close"] - prev2["Close"]
-        target = entry + prev_move
+        move = prev1["Close"] - prev2["Close"]
+        target = entry + move
 
         high = df["High"].iloc[i]
         close = df["Close"].iloc[i]
 
-        if high >= target:
-            exit_price = target
-        else:
-            exit_price = close
+        exit_price = target if high >= target else close
 
         pnl = (exit_price - entry) / entry * 100
 
@@ -138,16 +149,21 @@ for i in range(2, len(df)):
         df.iloc[i, df.columns.get_loc("PnL %")] = pnl
 
 # ======================
+# FILTER VIEW
+# ======================
+df_view = df[(df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
+
+# ======================
 # TABLE
 # ======================
-table = df.reset_index()[[
+table = df_view.reset_index()[[
     "Time","Open","High","Low","Close",
     "Decision","Entry","Target","PnL %"
 ]].copy()
 
 table["Execute"] = False
 
-st.subheader("📊 ALL 4H CANDLES + LIVE")
+st.subheader("📊 LIVE 4H CANDLES")
 
 edited = st.data_editor(table, use_container_width=True)
 
@@ -156,16 +172,11 @@ edited = st.data_editor(table, use_container_width=True)
 # ======================
 balance = capital
 
-edited_df = pd.DataFrame(edited)
-
-for i in range(len(edited_df)):
-
-    if edited_df.at[i, "Execute"]:
-
-        pnl = edited_df.at[i, "PnL %"]
-
+for i in range(len(edited)):
+    if edited.iloc[i]["Execute"]:
+        pnl = edited.iloc[i]["PnL %"]
         if pd.notna(pnl):
-            balance *= (1 + pnl / 100)
+            balance *= (1 + pnl/100)
 
 st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
