@@ -1,39 +1,57 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 FULL 4H SIGNAL + LIVE")
+st.title("🚀 REAL TRADINGVIEW SIGNAL (BINANCE)")
 
 # ======================
 # INPUT
 # ======================
-col1, col2 = st.columns(2)
-
-with col1:
-    start = st.date_input("Start")
-    end   = st.date_input("End")
-
-with col2:
-    capital = st.number_input("Capital ($)", value=1000)
+capital = st.number_input("Capital ($)", value=1000)
 
 # ======================
-# DATA 4H
+# GET BINANCE DATA
 # ======================
-df = yf.download("BTC-USD", interval="4h", start=start, end=end)
+def get_binance_klines(symbol="BTCUSDT", interval="4h", limit=200):
+    url = "https://api.binance.com/api/v3/klines"
 
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.get_level_values(0)
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
 
-df = df[["Open","High","Low","Close"]]
+    data = requests.get(url, params=params).json()
+
+    df = pd.DataFrame(data, columns=[
+        "time","open","high","low","close","volume",
+        "close_time","qav","trades","tbbav","tbqav","ignore"
+    ])
+
+    df["time"] = pd.to_datetime(df["time"], unit="ms")
+
+    df = df[["time","open","high","low","close"]]
+    df.columns = ["Time","Open","High","Low","Close"]
+
+    df.set_index("Time", inplace=True)
+    df = df.astype(float)
+
+    return df
 
 # ======================
-# SIGNAL برای همه کندل‌ها
+# DATA (مثل TradingView)
+# ======================
+df = get_binance_klines()
+
+# ======================
+# SIGNAL (همون منطق تو)
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
 df["Target"] = np.nan
+df["PnL %"] = np.nan
 
 for i in range(2, len(df)):
 
@@ -45,69 +63,43 @@ for i in range(2, len(df)):
     if trend:
 
         entry = df["Open"].iloc[i]
+
+        # تارگت داینامیک
         prev_move = prev1["Close"] - prev2["Close"]
         target = entry + prev_move
+
+        high = df["High"].iloc[i]
+        close = df["Close"].iloc[i]
+
+        # داخل همان کندل
+        if high >= target:
+            exit_price = target
+        else:
+            exit_price = close
+
+        pnl = (exit_price - entry) / entry * 100
 
         df.at[df.index[i], "Decision"] = "TRADE"
         df.at[df.index[i], "Entry"] = entry
         df.at[df.index[i], "Target"] = target
-
-# ======================
-# LIVE DATA (1m)
-# ======================
-live = yf.download("BTC-USD", period="1d", interval="1m")
-
-if isinstance(live.columns, pd.MultiIndex):
-    live.columns = live.columns.get_level_values(0)
-
-# ======================
-# ADD LIVE CANDLE (بدون ارور timezone)
-# ======================
-if not live.empty:
-
-    # هم‌تراز timezone
-    now = pd.Timestamp.now(tz=live.index.tz)
-
-    hour_block = (now.hour // 4) * 4
-    candle_start = now.replace(hour=hour_block, minute=0, second=0, microsecond=0)
-
-    current_data = live[live.index >= candle_start]
-
-    if not current_data.empty:
-
-        open_ = current_data["Open"].iloc[0]
-        high_ = current_data["High"].max()
-        low_ = current_data["Low"].min()
-        close_ = current_data["Close"].iloc[-1]
-
-        new_row = pd.DataFrame({
-            "Open": [open_],
-            "High": [high_],
-            "Low": [low_],
-            "Close": [close_],
-            "Decision": ["LIVE"],
-            "Entry": [open_],
-            "Target": [np.nan]
-        }, index=[candle_start])
-
-        df = pd.concat([df, new_row])
+        df.at[df.index[i], "PnL %"] = pnl
 
 # ======================
 # TABLE
 # ======================
 table = df[[
     "Open","High","Low","Close",
-    "Decision","Entry","Target"
+    "Decision","Entry","Target","PnL %"
 ]].copy()
 
 table["Execute"] = False
 
-st.subheader("📊 ALL 4H CANDLES + LIVE")
+st.subheader("📊 ALL 4H CANDLES (BINANCE)")
 
 edited = st.data_editor(table, use_container_width=True)
 
 # ======================
-# SIMULATION (FIXED)
+# SIMULATION
 # ======================
 balance = capital
 
@@ -117,12 +109,10 @@ for i in range(len(edited_df)):
 
     if edited_df.at[i, "Execute"]:
 
-        entry = edited_df.at[i, "Entry"]
-        target = edited_df.at[i, "Target"]
+        pnl = edited_df.at[i, "PnL %"]
 
-        if pd.notna(entry) and pd.notna(target):
-            pnl = (target - entry) / entry
-            balance *= (1 + pnl)
+        if pd.notna(pnl):
+            balance *= (1 + pnl / 100)
 
 # ======================
 # RESULT
