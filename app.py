@@ -41,9 +41,6 @@ if "df" not in st.session_state:
 if "last_price" not in st.session_state:
     st.session_state.last_price = None
 
-if "exec" not in st.session_state:
-    st.session_state.exec = {}
-
 # ======================
 # WEBSOCKET
 # ======================
@@ -77,24 +74,11 @@ if "ws_started" not in st.session_state:
 # ======================
 # INPUT
 # ======================
-col1, col2, col3 = st.columns(3)
-
+col1, col2 = st.columns(2)
 start = col1.date_input("Start", value=st.session_state.df.index.min().date())
 end   = col2.date_input("End", value=st.session_state.df.index.max().date())
-capital = col3.number_input("Capital", value=100)
 
 only_trades = st.toggle("Show Only TRADE", False)
-
-# ======================
-# FILTERS
-# ======================
-st.markdown("### 🎛 FILTERS")
-
-f1, f2, f3 = st.columns(3)
-
-only_positive = f1.toggle("PnL مثبت", False)
-min_pnl = f2.number_input("Min PnL %", value=0.0)
-only_valid = f3.toggle("فقط تریدهای معتبر", True)
 
 # ======================
 # STRATEGY
@@ -154,14 +138,6 @@ while True:
         if only_trades:
             df_view = df_view[df_view["Decision"] == "TRADE"]
 
-        if only_valid:
-            df_view = df_view[df_view["Decision"] == "TRADE"]
-
-        if only_positive:
-            df_view = df_view[df_view["PnL %"] > 0]
-
-        df_view = df_view[df_view["PnL %"].fillna(-999) >= min_pnl]
-
         rows = list(df_view.iterrows())
 
         with placeholder.container():
@@ -176,19 +152,17 @@ while True:
             # ======================
             c1, c2 = st.columns(2)
 
-            if c1.button("✅ Select All"):
+            if c1.button("✅ Select All", key="select_all_btn"):
                 for idx, _ in rows:
                     st.session_state[f"trade_{idx}"] = True
 
-            if c2.button("❌ Clear All"):
+            if c2.button("❌ Clear All", key="clear_all_btn"):
                 for idx, _ in rows:
                     st.session_state[f"trade_{idx}"] = False
 
             # ======================
             # TABLE
             # ======================
-            st.markdown("### 📊 SIGNAL TABLE")
-
             header = st.columns([2,1,1,1,1,1,1,1,1,1])
             titles = ["Time","Open","High","Low","Close","Signal","Entry","Target","PnL %","✔"]
 
@@ -223,7 +197,6 @@ while True:
                 else:
                     cols[8].write("-")
 
-                # فقط ترید قابل انتخاب
                 if row["Decision"] == "TRADE":
                     cols[9].checkbox(
                         "",
@@ -232,36 +205,5 @@ while True:
                     )
                 else:
                     cols[9].write("—")
-
-            # ======================
-            # RESULT
-            # ======================
-            balance = capital
-
-            for i, (idx, row) in enumerate(rows):
-
-                key = f"trade_{idx}"
-
-                if st.session_state.get(key, False):
-
-                    if i < len(rows) - 1:
-
-                        next_row = rows[i+1][1]
-
-                        entry = row["Entry"]
-                        target = row["Target"]
-
-                        if pd.notna(entry):
-
-                            high = next_row["High"]
-                            close = next_row["Close"]
-
-                            exit_price = target if high >= target else close
-                            pnl = (exit_price - entry) / entry
-
-                            balance *= (1 + pnl)
-
-            st.markdown("### 💰 RESULT")
-            st.metric("Final Balance", f"${balance:.2f}")
 
     time.sleep(1)
