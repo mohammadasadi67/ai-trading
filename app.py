@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🚀 FULL 4H TRADING TABLE")
+st.title("🚀 CLEAN TRADING TABLE")
 
 # ======================
 # INPUT
@@ -29,52 +29,59 @@ if isinstance(df.columns, pd.MultiIndex):
 df = df[["Open","High","Low","Close","Volume"]]
 
 # ======================
-# INDICATOR (فقط EMA)
+# INTERNAL LOGIC (پنهان)
 # ======================
-df["EMA200"] = df["Close"].ewm(span=200).mean()
+vol_avg = df["Volume"].rolling(20).mean()
+vol_signal = df["Volume"] > vol_avg
 
 # ======================
-# SIGNAL (با حجم)
-# ======================
-df["Vol_Avg"] = df["Volume"].rolling(20).mean()
-df["Vol_Signal"] = df["Volume"] > df["Vol_Avg"]
-
-df["Signal"] = (df["Close"] > df["EMA200"]) & df["Vol_Signal"]
-
-# ======================
-# ENTRY / EXIT / SL
+# ENTRY / SL / TP
 # ======================
 df["Entry"] = np.nan
-df["Exit"] = np.nan
 df["SL"] = np.nan
+df["TP"] = np.nan
 
-mask = df["Signal"] == True
-
-df.loc[mask, "Entry"] = df["Close"]
-df.loc[mask, "Exit"] = df["Close"] * 1.05
-df.loc[mask, "SL"] = df["Close"] * 0.97
+df.loc[vol_signal, "Entry"] = df["Close"]
+df.loc[vol_signal, "SL"] = df["Close"] * 0.97
+df.loc[vol_signal, "TP"] = df["Close"] * 1.05
 
 # ======================
-# سود/ضرر درصدی
+# REAL PNL
 # ======================
-df["PnL %"] = np.where(
-    df["Signal"],
-    ((df["Exit"] - df["Entry"]) / df["Entry"]) * 100,
-    np.nan
-)
+df["PnL %"] = np.nan
+
+for i in range(len(df)):
+
+    if vol_signal.iloc[i]:
+
+        entry = df["Close"].iloc[i]
+        tp = entry * 1.05
+        sl = entry * 0.97
+
+        for j in range(i+1, len(df)):
+
+            high = df["High"].iloc[j]
+            low = df["Low"].iloc[j]
+
+            if high >= tp:
+                df.at[df.index[i], "PnL %"] = ((tp - entry) / entry) * 100
+                break
+
+            if low <= sl:
+                df.at[df.index[i], "PnL %"] = ((sl - entry) / entry) * 100
+                break
 
 # ======================
 # DECISION
 # ======================
-df["Decision"] = np.where(df["Signal"], "TRADE", "WAIT")
+df["Decision"] = np.where(vol_signal, "TRADE", "WAIT")
 
 # ======================
-# TABLE
+# TABLE (فقط چیزهای مهم)
 # ======================
 table = df[[
-    "Open","High","Low","Close","Volume",
-    "Vol_Signal","Signal","Decision",
-    "Entry","SL","Exit","PnL %"
+    "Open","High","Low","Close",
+    "Decision","Entry","SL","TP","PnL %"
 ]].copy()
 
 table["Execute"] = False
@@ -87,26 +94,18 @@ edited = st.data_editor(table, use_container_width=True)
 # SIMULATION
 # ======================
 balance = capital
-in_trade = False
 
 for i in range(len(edited)):
 
-    if edited["Execute"].iloc[i] and not in_trade:
+    if edited["Execute"].iloc[i]:
 
-        entry = edited["Entry"].iloc[i]
-        exit_price = edited["Exit"].iloc[i]
+        pnl = edited["PnL %"].iloc[i]
 
-        if not np.isnan(entry) and not np.isnan(exit_price):
-            profit = (exit_price - entry) / entry
-            balance *= (1 + profit)
-            in_trade = True
-
-    if not edited["Execute"].iloc[i]:
-        in_trade = False
+        if not np.isnan(pnl):
+            balance *= (1 + pnl / 100)
 
 # ======================
 # RESULT
 # ======================
 st.subheader("💰 RESULT")
-
 st.metric("Final Balance", f"${balance:.2f}")
