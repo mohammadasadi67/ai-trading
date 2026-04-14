@@ -4,11 +4,11 @@ import numpy as np
 import requests
 from datetime import datetime, timedelta, date
 
-# تنظیمات اصلی صفحه
-st.set_page_config(layout="wide", page_title="AI RL-Trading Panel")
+# Page Configuration
+st.set_page_config(layout="wide", page_title="RL Trading Panel")
 
 # ======================
-# دریافت داده‌های زنده از بایننس
+# Data Fetching
 # ======================
 def get_live_data():
     url = "https://data-api.binance.vision/api/v3/klines"
@@ -27,7 +27,7 @@ def get_live_data():
         df = df.astype(float)
         return df
     except Exception as e:
-        st.error(f"خطا در اتصال: {e}")
+        st.error(f"Connection Error: {e}")
         return pd.DataFrame()
 
 def get_time_remaining():
@@ -41,43 +41,42 @@ def get_time_remaining():
     return str(remaining).split(".")[0]
 
 # ======================
-# سایدبار و تنظیمات
+# Sidebar & Settings
 # ======================
-st.sidebar.title("🤖 AI Bot Settings")
-initial_capital = st.sidebar.number_input("سرمایه اولیه ($)", value=1000.0, step=100.0)
-start_date = st.sidebar.date_input("تاریخ شروع", value=date(2024, 1, 1))
+st.sidebar.title("Settings")
+initial_capital = st.sidebar.number_input("Initial Capital ($)", value=1000.0, step=100.0)
+start_date = st.sidebar.date_input("Start Date", value=date(2024, 1, 1))
 
 # ======================
-# پردازش داده‌ها با منطق RL
+# RL Logic Processing
 # ======================
 df = get_live_data()
 
 if not df.empty:
-    # اعمال فیلتر تاریخ
+    # Date Filtering
     df_filtered = df[df.index.date >= start_date].copy()
     
     if df_filtered.empty:
-        st.warning("⚠️ در این بازه زمانی دیتایی یافت نشد.")
+        st.warning("No data found for the selected date range.")
     else:
-        df_filtered["Signal"] = "⚪ WAIT"
+        df_filtered["Signal"] = "WAIT"
         df_filtered["Entry"] = np.nan
         df_filtered["Target"] = np.nan
         df_filtered["StopLoss"] = np.nan
         df_filtered["Confidence"] = 0.0
         df_filtered["PnL_Percent"] = 0.0
 
-        # پارامترهای یادگیری مدل
+        # Learning Parameters
         best_multiplier = 1.0
         total_bal_multiplier = 1.0
 
         for i in range(2, len(df_filtered)):
             p1, p2 = df_filtered.iloc[i-1], df_filtered.iloc[i-2]
             
-            # استراتژی پایه + چاشنی هوش مصنوعی
             if p1["Close"] > p2["Close"]:
                 entry = df_filtered["Open"].iloc[i]
                 
-                # RL: تطبیق تارگت بر اساس موفقیت‌های قبلی
+                # RL Strategy Adaptation
                 base_diff = p1["Close"] - p2["Close"]
                 target = entry + (base_diff * best_multiplier)
                 sl = p1["Low"]
@@ -85,15 +84,15 @@ if not df.empty:
                 curr_close = df_filtered["Close"].iloc[i]
                 pnl_raw = (curr_close - entry) / entry
                 
-                # سیستم پاداش و تنبیه برای معامله بعدی
+                # Reward/Penalty System
                 if pnl_raw > 0:
-                    best_multiplier = min(2.5, best_multiplier + 0.05) # تشویق
+                    best_multiplier = min(2.5, best_multiplier + 0.05)
                     conf = min(0.98, 0.65 + (best_multiplier * 0.1))
                 else:
-                    best_multiplier = max(0.5, best_multiplier - 0.1) # تنبیه
+                    best_multiplier = max(0.5, best_multiplier - 0.1)
                     conf = max(0.40, 0.60 - abs(best_multiplier * 0.05))
 
-                df_filtered.iloc[i, df_filtered.columns.get_loc("Signal")] = "🤖 AI-BUY"
+                df_filtered.iloc[i, df_filtered.columns.get_loc("Signal")] = "BUY"
                 df_filtered.iloc[i, df_filtered.columns.get_loc("Entry")] = entry
                 df_filtered.iloc[i, df_filtered.columns.get_loc("Target")] = target
                 df_filtered.iloc[i, df_filtered.columns.get_loc("StopLoss")] = sl
@@ -105,7 +104,7 @@ if not df.empty:
         final_balance = initial_capital * total_bal_multiplier
 
         # ======================
-        # نمایش هدر لایو
+        # Header UI
         # ======================
         curr_p = df_filtered["Close"].iloc[-1]
         
@@ -127,16 +126,16 @@ if not df.empty:
 
         st.write("")
         m1, m2, m3 = st.columns(3)
-        m1.metric("سرمایه شروع", f"${initial_capital:,.0f}")
-        m2.metric("موجودی فعلی", f"${final_balance:,.2f}", delta=f"{(total_bal_multiplier-1)*100:.2f}%")
-        m3.metric("سود خالص", f"${final_balance - initial_capital:,.2f}")
+        m1.metric("Starting Balance", f"${initial_capital:,.0f}")
+        m2.metric("Current Balance", f"${final_balance:,.2f}", delta=f"{(total_bal_multiplier-1)*100:.2f}%")
+        m3.metric("Net Profit", f"${final_balance - initial_capital:,.2f}")
 
         st.divider()
 
         # ======================
-        # جدول با نوار پیشرفت (Progress)
+        # Data Table with Progress Bar
         # ======================
-        st.subheader("📋 RL Model Predictions & History")
+        st.subheader("Trading Logs & RL Predictions")
         
         view_df = df_filtered.sort_index(ascending=False).copy()
         
@@ -145,22 +144,22 @@ if not df.empty:
             use_container_width=True,
             height=450,
             column_config={
-                "Signal": st.column_config.TextColumn("سیگنال"),
+                "Signal": st.column_config.TextColumn("Signal"),
                 "Confidence": st.column_config.ProgressColumn(
-                    "اطمینان مدل",
-                    help="AI Confidence Level based on RL Memory",
+                    "Agent Confidence",
+                    help="RL Model Memory Confidence",
                     format="%.0f%%",
                     min_value=0.0,
                     max_value=1.0
                 ),
-                "Entry": st.column_config.NumberColumn("ورود", format="$%.1f"),
-                "Target": st.column_config.NumberColumn("تارگت بهینه", format="$%.1f"),
-                "StopLoss": st.column_config.NumberColumn("حد ضرر (SL)", format="$%.1f"),
+                "Entry": st.column_config.NumberColumn("Entry", format="$%.1f"),
+                "Target": st.column_config.NumberColumn("Optimized TP", format="$%.1f"),
+                "StopLoss": st.column_config.NumberColumn("SL", format="$%.1f"),
                 "PnL_Percent": st.column_config.NumberColumn("PnL %", format="%.2f%%"),
-                "Close": st.column_config.NumberColumn("قیمت فعلی/نهایی", format="$%.1f"),
+                "Close": st.column_config.NumberColumn("Current/Exit", format="$%.1f"),
                 "Open": None, "High": None, "Low": None
             }
         )
 
-# رفرش خودکار
+# Auto-Refresh Script
 st.markdown("<script>setTimeout(function(){window.location.reload();}, 15000);</script>", unsafe_allow_html=True)
