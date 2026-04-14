@@ -1,3 +1,7 @@
 streamlit
 yfinance
 pandas
+numpy
+streamlit-autorefresh
+stable-baselines3
+gymnasium
