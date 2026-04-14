@@ -2,14 +2,25 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
+import time
 
 st.set_page_config(layout="wide")
-st.title("🚀 TRADING PANEL")
+st.title("🚀 REALTIME TRADING PANEL (SAFE)")
+
+# ======================
+# AUTO REFRESH SAFE
+# ======================
+if "last_run" not in st.session_state:
+    st.session_state.last_run = time.time()
+
+if time.time() - st.session_state.last_run > 3:
+    st.session_state.last_run = time.time()
+    st.rerun()
 
 # ======================
 # DATA
 # ======================
-@st.cache_data
+@st.cache_data(ttl=2)
 def get_data():
     url = "https://data-api.binance.vision/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 200}
@@ -79,14 +90,14 @@ if only_trades:
 rows = list(df_view.iterrows())
 
 # ======================
-# BUTTONS (NO DUPLICATE KEY)
+# BUTTONS (SAFE)
 # ======================
-c1, c2 = st.columns(2)
+col1, col2 = st.columns(2)
 
-if c1.button("✅ Select All"):
+if col1.button("✅ Select All"):
     st.session_state.select_all = True
 
-if c2.button("❌ Clear All"):
+if col2.button("❌ Clear All"):
     st.session_state.select_all = False
 
 # ======================
@@ -100,7 +111,7 @@ for col, t in zip(header, titles):
 
 for i, (idx, row) in enumerate(rows):
 
-    key = f"trade_{i}"   # 🔥 فقط این مهمه
+    key = f"trade_{i}"   # 🔥 کاملاً یکتا
 
     cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
@@ -117,7 +128,10 @@ for i, (idx, row) in enumerate(rows):
 
     if pd.notna(row["PnL %"]):
         color = "green" if row["PnL %"] > 0 else "red"
-        cols[8].markdown(f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
+        cols[8].markdown(
+            f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>",
+            unsafe_allow_html=True
+        )
     else:
         cols[8].write("-")
 
