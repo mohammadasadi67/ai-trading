@@ -75,7 +75,7 @@ if "ws_started" not in st.session_state:
     st.session_state.ws_started = True
 
 # ======================
-# INPUT UI
+# INPUT
 # ======================
 col1, col2, col3 = st.columns(3)
 
@@ -84,6 +84,17 @@ end   = col2.date_input("End", value=st.session_state.df.index.max().date())
 capital = col3.number_input("Capital", value=100)
 
 only_trades = st.toggle("Show Only TRADE", False)
+
+# ======================
+# FILTERS
+# ======================
+st.markdown("### 🎛 FILTERS")
+
+f1, f2, f3 = st.columns(3)
+
+only_positive = f1.toggle("PnL مثبت", False)
+min_pnl = f2.number_input("Min PnL %", value=0.0)
+only_valid = f3.toggle("فقط تریدهای معتبر", True)
 
 # ======================
 # STRATEGY
@@ -137,12 +148,19 @@ while True:
 
         df = apply_strategy(df)
 
-        # FILTER
         df_view = df[(df.index >= pd.Timestamp(start)) &
                      (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
         if only_trades:
             df_view = df_view[df_view["Decision"] == "TRADE"]
+
+        if only_valid:
+            df_view = df_view[df_view["Decision"] == "TRADE"]
+
+        if only_positive:
+            df_view = df_view[df_view["PnL %"] > 0]
+
+        df_view = df_view[df_view["PnL %"].fillna(-999) >= min_pnl]
 
         rows = list(df_view.iterrows())
 
@@ -153,6 +171,22 @@ while True:
             if st.session_state.last_price:
                 st.metric("BTC Price", f"{st.session_state.last_price:,.0f}")
 
+            # ======================
+            # SELECT ALL
+            # ======================
+            c1, c2 = st.columns(2)
+
+            if c1.button("✅ Select All"):
+                for idx, _ in rows:
+                    st.session_state[f"trade_{idx}"] = True
+
+            if c2.button("❌ Clear All"):
+                for idx, _ in rows:
+                    st.session_state[f"trade_{idx}"] = False
+
+            # ======================
+            # TABLE
+            # ======================
             st.markdown("### 📊 SIGNAL TABLE")
 
             header = st.columns([2,1,1,1,1,1,1,1,1,1])
@@ -163,7 +197,7 @@ while True:
 
             for i, (idx, row) in enumerate(rows):
 
-                key = str(idx)
+                key = f"trade_{idx}"
                 cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
                 cols[0].write(idx.strftime("%m-%d %H:%M"))
@@ -172,7 +206,6 @@ while True:
                 cols[3].write(round(row["Low"],2))
                 cols[4].write(round(row["Close"],2) if pd.notna(row["Close"]) else "LIVE")
 
-                # رنگی
                 if row["Decision"] == "TRADE":
                     cols[5].markdown("🟢 TRADE")
                 else:
@@ -183,11 +216,22 @@ while True:
 
                 if pd.notna(row["PnL %"]):
                     color = "green" if row["PnL %"] > 0 else "red"
-                    cols[8].markdown(f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
+                    cols[8].markdown(
+                        f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>",
+                        unsafe_allow_html=True
+                    )
                 else:
                     cols[8].write("-")
 
-                cols[9].checkbox("", key=key)
+                # فقط ترید قابل انتخاب
+                if row["Decision"] == "TRADE":
+                    cols[9].checkbox(
+                        "",
+                        value=st.session_state.get(key, False),
+                        key=key
+                    )
+                else:
+                    cols[9].write("—")
 
             # ======================
             # RESULT
@@ -196,7 +240,9 @@ while True:
 
             for i, (idx, row) in enumerate(rows):
 
-                if st.session_state.get(str(idx), False):
+                key = f"trade_{idx}"
+
+                if st.session_state.get(key, False):
 
                     if i < len(rows) - 1:
 
