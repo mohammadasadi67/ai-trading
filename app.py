@@ -2,26 +2,42 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import time
 
 st.set_page_config(layout="wide")
-st.title("🚀 REALTIME PANEL")
 
 # ======================
-# AUTO RERUN SAFE
+# AUTO REFRESH
 # ======================
-if "last_run" not in st.session_state:
-    st.session_state.last_run = time.time()
+st.markdown("""
+<script>
+setTimeout(function(){
+    window.location.reload();
+}, 3000);
+</script>
+""", unsafe_allow_html=True)
 
-if time.time() - st.session_state.last_run > 5:
-    st.session_state.last_run = time.time()
-    st.rerun()
+st.title("🚀 PRO TRADING PANEL")
+
+# ======================
+# STATE
+# ======================
+if "exec" not in st.session_state:
+    st.session_state.exec = {}
+
+# ======================
+# INPUT
+# ======================
+col1, col2, col3 = st.columns(3)
+start = col1.date_input("Start")
+end   = col2.date_input("End")
+capital = col3.number_input("Capital", value=100)
+
+only_trades = st.toggle("Show Only TRADE", False)
 
 # ======================
 # DATA
 # ======================
-@st.cache_data(ttl=3)
-def get_data():
+def get_4h():
     url = "https://data-api.binance.vision/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 200}
     data = requests.get(url, params=params).json()
@@ -39,10 +55,26 @@ def get_data():
 
     return df
 
-df = get_data()
+df = get_4h()
 
 # ======================
-# STRATEGY
+# NEW CANDLE (خام)
+# ======================
+last_4h = df.index[-1]
+next_4h = last_4h + pd.Timedelta(hours=4)
+
+if next_4h not in df.index:
+    new_row = pd.DataFrame({
+        "Open":[df["Close"].iloc[-1]],
+        "High":[df["Close"].iloc[-1]],
+        "Low":[df["Close"].iloc[-1]],
+        "Close":[np.nan]
+    }, index=[next_4h])
+
+    df = pd.concat([df, new_row]).sort_index()
+
+# ======================
+# SIGNAL
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -60,10 +92,10 @@ for i in range(2, len(df)-1):
         move = prev1["Close"] - prev2["Close"]
         target = entry + move
 
-        high_next = df["High"].iloc[i+1]
-        close_next = df["Close"].iloc[i+1]
+        high = df["High"].iloc[i]
+        close = df["Close"].iloc[i]
 
-        exit_price = target if high_next >= target else close_next
+        exit_price = target if high >= target else close
         pnl = (exit_price - entry) / entry * 100
 
         df.iloc[i, df.columns.get_loc("Decision")] = "TRADE"
@@ -74,59 +106,89 @@ for i in range(2, len(df)-1):
 # ======================
 # FILTER
 # ======================
-only_trades = st.toggle("Show Only TRADE", False)
+df_view = df[(df.index >= pd.Timestamp(start)) &
+             (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
-df_view = df[df["Decision"] == "TRADE"] if only_trades else df
+if only_trades:
+    df_view = df_view[df_view["Decision"] == "TRADE"]
+
 rows = list(df_view.iterrows())
 
 # ======================
-# TABLE HEADER
+# TABLE UI
 # ======================
+st.markdown("### 📊 SIGNAL TABLE")
+
 header = st.columns([2,1,1,1,1,1,1,1,1,1])
 titles = ["Time","Open","High","Low","Close","Signal","Entry","Target","PnL %","✔"]
 
 for col, t in zip(header, titles):
     col.markdown(f"**{t}**")
 
-# ======================
-# TABLE ROWS
-# ======================
 for i, (idx, row) in enumerate(rows):
 
-    # ✅ کلید یکتا (بدون تداخل)
-    key = f"trade_{i}_{idx.strftime('%Y%m%d%H%M')}"
-
+    key = str(idx)
     cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
+    # time
     cols[0].write(idx.strftime("%m-%d %H:%M"))
+
     cols[1].write(round(row["Open"],2))
     cols[2].write(round(row["High"],2))
     cols[3].write(round(row["Low"],2))
-    cols[4].write(round(row["Close"],2))
 
-    cols[5].markdown("🟢 TRADE" if row["Decision"]=="TRADE" else "⚪ WAIT")
+    # close
+    if i == len(rows)-1:
+        cols[4].write("-")
+    else:
+        cols[4].write(round(row["Close"],2))
+
+    # signal رنگی
+    if row["Decision"] == "TRADE":
+        cols[5].markdown("🟢 TRADE")
+    else:
+        cols[5].markdown("⚪ WAIT")
 
     cols[6].write(round(row["Entry"],2) if pd.notna(row["Entry"]) else "-")
     cols[7].write(round(row["Target"],2) if pd.notna(row["Target"]) else "-")
 
+    # pnl رنگی
     if pd.notna(row["PnL %"]):
-        color = "green" if row["PnL %"] > 0 else "red"
-        cols[8].markdown(
-            f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>",
-            unsafe_allow_html=True
-        )
+        if row["PnL %"] > 0:
+            cols[8].markdown(f"<span style='color:green'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
+        else:
+            cols[8].markdown(f"<span style='color:red'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
     else:
         cols[8].write("-")
 
-    # ======================
-    # CHECKBOX
-    # ======================
-    if row["Decision"] == "TRADE":
+    # checkbox
+    cols[9].checkbox(
+        "",
+        value=st.session_state.exec.get(key, False),
+        key=key
+    )
 
-        if key not in st.session_state:
-            st.session_state[key] = row["PnL %"] > 0
+# ======================
+# RESULT
+# ======================
+balance = capital
 
-        cols[9].checkbox("", key=key)
+for i, (idx, row) in enumerate(rows):
 
-    else:
-        cols[9].write("—")
+    if st.session_state.exec.get(str(idx), False):
+
+        if i < len(rows) - 1:
+
+            entry = row["Entry"]
+            target = row["Target"]
+            high = row["High"]
+            close = row["Close"]
+
+            if pd.notna(entry):
+
+                exit_price = target if high >= target else close
+                pnl = (exit_price - entry) / entry
+                balance *= (1 + pnl)
+
+st.markdown("### 💰 RESULT")
+st.metric("Final Balance", f"${balance:.2f}")
