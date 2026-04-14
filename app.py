@@ -4,54 +4,24 @@ import numpy as np
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 TRUE LIVE 4H (FIXED)")
+st.title("🚀 FINAL WORKING VERSION")
 
 # ======================
 # INPUT
 # ======================
-col1, col2 = st.columns(2)
-
-with col1:
-    start = st.date_input("Start Date")
-    end   = st.date_input("End Date")
-
-with col2:
-    capital = st.number_input("Capital ($)", value=100)
+start = st.date_input("Start Date")
+end   = st.date_input("End Date")
+capital = st.number_input("Capital", value=100)
 
 # ======================
-# HIST DATA
+# GET 4H DATA
 # ======================
-def get_hist(start, end):
-
+def get_4h(limit=200):
     url = "https://data-api.binance.vision/api/v3/klines"
+    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": limit}
+    data = requests.get(url, params=params).json()
 
-    start_ms = int(pd.Timestamp(start).timestamp()*1000)
-    end_ms   = int((pd.Timestamp(end)+pd.Timedelta(days=1)).timestamp()*1000)
-
-    all_data = []
-
-    while True:
-        params = {
-            "symbol": "BTCUSDT",
-            "interval": "4h",
-            "startTime": start_ms,
-            "endTime": end_ms,
-            "limit": 1000
-        }
-
-        data = requests.get(url, params=params).json()
-
-        if not data:
-            break
-
-        all_data.extend(data)
-
-        if len(data) < 1000:
-            break
-
-        start_ms = data[-1][0] + 1
-
-    df = pd.DataFrame(all_data, columns=[
+    df = pd.DataFrame(data, columns=[
         "time","open","high","low","close","volume",
         "close_time","qav","trades","tbbav","tbqav","ignore"
     ])
@@ -64,59 +34,23 @@ def get_hist(start, end):
 
     return df
 
-df = get_hist(pd.Timestamp(start)-pd.Timedelta(days=2), end)
+df = get_4h()
 
 # ======================
-# LIVE 1m (بیشتر بگیر!)
+# FORCE ADD LIVE CANDLE
 # ======================
-live = requests.get(
-    "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 1000}  # 🔥 قبلاً 300 بود
-).json()
+live = get_4h(limit=1)  # 👈 آخرین کندل
 
-live_df = pd.DataFrame(live, columns=[
-    "time","open","high","low","close","volume",
-    "close_time","qav","trades","tbbav","tbqav","ignore"
-])
+last_time = live.index[-1]
 
-live_df["time"] = pd.to_datetime(live_df["time"], unit="ms")
-live_df = live_df[["time","open","high","low","close"]]
-live_df.columns = ["Time","Open","High","Low","Close"]
-live_df.set_index("Time", inplace=True)
-live_df = live_df.astype(float)
+# اگر این کندل تو df نیست → اضافه کن
+if last_time not in df.index:
+    df.loc[last_time] = live.iloc[-1]
+else:
+    # آپدیت کن
+    df.loc[last_time] = live.iloc[-1]
 
-# ======================
-# BUILD LIVE 4H
-# ======================
-last_time = live_df.index[-1]
-
-hour = last_time.hour
-block = (hour // 4) * 4
-
-current_start = last_time.replace(hour=block, minute=0, second=0, microsecond=0)
-
-current_data = live_df[live_df.index >= current_start]
-
-# 🔥 این شرط مهمه
-if len(current_data) > 5:
-
-    open_ = current_data["Open"].iloc[0]
-    high_ = current_data["High"].max()
-    low_  = current_data["Low"].min()
-    close_ = current_data["Close"].iloc[-1]
-
-    new_candle = pd.DataFrame({
-        "Open":[open_],
-        "High":[high_],
-        "Low":[low_],
-        "Close":[close_]
-    }, index=[current_start])
-
-    if current_start in df.index:
-        df = df.drop(current_start)
-
-    df = pd.concat([df, new_candle])
-    df = df.sort_index()
+df = df.sort_index()
 
 # ======================
 # SIGNAL
@@ -151,10 +85,10 @@ for i in range(2, len(df)):
 # ======================
 # FILTER
 # ======================
+df.index.name = "Time"
+
 df_view = df[(df.index >= pd.Timestamp(start)) &
              (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
-
-df_view.index.name = "Time"
 
 # ======================
 # TABLE
