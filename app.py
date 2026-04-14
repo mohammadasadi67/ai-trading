@@ -4,15 +4,19 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🚀 ONE CANDLE STRATEGY")
+st.title("🚀 PRO ENTRY (SMART REVERSAL)")
 
 # ======================
 # INPUT
 # ======================
-start = st.date_input("Start")
-end   = st.date_input("End")
+col1, col2 = st.columns(2)
 
-capital = st.number_input("Capital ($)", value=1000)
+with col1:
+    start = st.date_input("Start")
+    end   = st.date_input("End")
+
+with col2:
+    capital = st.number_input("Capital ($)", value=1000)
 
 # ======================
 # DATA
@@ -25,42 +29,56 @@ if isinstance(df.columns, pd.MultiIndex):
 df = df[["Open","High","Low","Close"]]
 
 # ======================
-# TREND (ساده)
+# TREND
 # ======================
 df["Trend"] = df["Close"].shift(1) > df["Close"].shift(2)
 
 # ======================
-# ENTRY / TARGET / PNL
+# ENTRY LOGIC حرفه‌ای
 # ======================
-df["Decision"] = np.where(df["Trend"], "TRADE", "WAIT")
+df["Decision"] = "WAIT"
 df["Entry"] = np.nan
 df["Target"] = np.nan
 df["PnL %"] = np.nan
 
-for i in range(2, len(df)):
+for i in range(3, len(df)):
 
     if df["Trend"].iloc[i]:
 
-        entry = df["Open"].iloc[i]
-
-        # تارگت بر اساس روند (حرکت قبلی)
-        prev_move = df["Close"].iloc[i-1] - df["Close"].iloc[i-2]
-        target = entry + prev_move
-
-        high = df["High"].iloc[i]
+        open_ = df["Open"].iloc[i]
         close = df["Close"].iloc[i]
+        high = df["High"].iloc[i]
+        low = df["Low"].iloc[i]
 
-        # برخورد به تارگت؟
-        if high >= target:
-            exit_price = target
-        else:
-            exit_price = close
+        # شرط برگشت واقعی
+        strong_reversal = (
+            (close > open_) and
+            ((high - close) < (close - low))  # نزدیک سقف بسته شده
+        )
 
-        pnl = (exit_price - entry) / entry * 100
+        # کف جدید
+        new_low = low < df["Low"].iloc[i-1]
 
-        df.at[df.index[i], "Entry"] = entry
-        df.at[df.index[i], "Target"] = target
-        df.at[df.index[i], "PnL %"] = pnl
+        if strong_reversal and new_low:
+
+            entry = close  # ورود روی قدرت
+
+            # تارگت بر اساس حرکت قبلی
+            prev_move = df["Close"].iloc[i-1] - df["Close"].iloc[i-2]
+            target = entry + prev_move
+
+            # بررسی داخل همان کندل
+            if high >= target:
+                exit_price = target
+            else:
+                exit_price = close
+
+            pnl = (exit_price - entry) / entry * 100
+
+            df.at[df.index[i], "Decision"] = "TRADE"
+            df.at[df.index[i], "Entry"] = entry
+            df.at[df.index[i], "Target"] = target
+            df.at[df.index[i], "PnL %"] = pnl
 
 # ======================
 # TABLE
@@ -72,18 +90,28 @@ table = df[[
 
 table["Execute"] = False
 
-st.data_editor(table, use_container_width=True)
+st.subheader("📊 ALL 4H CANDLES")
+
+edited = st.data_editor(table, use_container_width=True)
 
 # ======================
 # SIMULATION
 # ======================
 balance = capital
 
-for i in range(len(table)):
-    if table["Execute"].iloc[i]:
-        pnl = table["PnL %"].iloc[i]
-        if not np.isnan(pnl):
+edited_df = pd.DataFrame(edited).reset_index(drop=True)
+
+for i in range(len(edited_df)):
+
+    if edited_df.at[i, "Execute"]:
+
+        pnl = edited_df.at[i, "PnL %"]
+
+        if pd.notna(pnl):
             balance *= (1 + pnl / 100)
 
+# ======================
+# RESULT
+# ======================
 st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
