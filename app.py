@@ -2,9 +2,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
+import time
 
 st.set_page_config(layout="wide")
-st.title("🚀 REAL CANDLE + LIVE CLOSE + SIGNAL")
+st.title("🚀 LIVE TRADING (1s UPDATE)")
+
+# ======================
+# AUTO REFRESH
+# ======================
+time.sleep(1)
+st.experimental_rerun()
 
 # ======================
 # INPUT
@@ -37,11 +44,11 @@ def get_4h(limit=200):
 df = get_4h()
 
 # ======================
-# GET LIVE DATA (چند دقیقه اخیر)
+# LIVE DATA (چند دقیقه اخیر)
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 20}
+    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 30}
 ).json()
 
 live_df = pd.DataFrame(live, columns=[
@@ -56,37 +63,35 @@ live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
 # ======================
-# ساخت کندل جاری
+# BUILD LIVE CANDLE
 # ======================
-last_4h_time = df.index[-1]
-next_candle_time = last_4h_time + pd.Timedelta(hours=4)
+last_4h = df.index[-1]
+next_4h = last_4h + pd.Timedelta(hours=4)
 
-current_data = live_df[live_df.index >= last_4h_time]
+current = live_df[live_df.index >= last_4h]
 
-# اگر کندل جدید شروع شده
-if not current_data.empty:
+if not current.empty:
 
-    open_ = current_data["Open"].iloc[0]
-    high_ = current_data["High"].max()
-    low_  = current_data["Low"].min()
-    close_ = current_data["Close"].iloc[-1]  # 🔥 لایو
+    open_ = current["Open"].iloc[0]
+    high_ = current["High"].max()
+    low_  = current["Low"].min()
+    close_ = current["Close"].iloc[-1]  # 🔥 لایو
 
     new_row = pd.DataFrame({
         "Open":[open_],
         "High":[high_],
         "Low":[low_],
         "Close":[close_]
-    }, index=[next_candle_time])
+    }, index=[next_4h])
 
-    # حذف قبلی اگر وجود داشت
-    if next_candle_time in df.index:
-        df = df.drop(next_candle_time)
+    if next_4h in df.index:
+        df = df.drop(next_4h)
 
     df = pd.concat([df, new_row])
     df = df.sort_index()
 
 # ======================
-# SIGNAL (فقط وقتی مجازه)
+# SIGNAL
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -97,9 +102,7 @@ for i in range(2, len(df)):
     prev1 = df.iloc[i-1]
     prev2 = df.iloc[i-2]
 
-    trend_up = prev1["Close"] > prev2["Close"]
-
-    if trend_up:
+    if prev1["Close"] > prev2["Close"]:
 
         entry = df["Open"].iloc[i]
         move = prev1["Close"] - prev2["Close"]
@@ -130,7 +133,7 @@ table["Execute"] = False
 st.data_editor(table, use_container_width=True)
 
 # ======================
-# RESULT
+# RESULT (PnL مثل قبل)
 # ======================
 balance = capital
 
@@ -144,7 +147,6 @@ for i in range(len(table)):
 
         if pd.notna(entry) and pd.notna(target):
 
-            # اگر به تارگت رسید
             if close >= target:
                 pnl = (target - entry) / entry
             else:
