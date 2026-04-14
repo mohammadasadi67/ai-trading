@@ -5,10 +5,10 @@ import requests
 import time
 
 st.set_page_config(layout="wide")
-st.title("🚀 REALTIME TRADING PANEL (SAFE)")
+st.title("🚀 REALTIME PANEL")
 
 # ======================
-# AUTO REFRESH SAFE
+# AUTO RERUN SAFE
 # ======================
 if "last_run" not in st.session_state:
     st.session_state.last_run = time.time()
@@ -82,15 +82,11 @@ for i in range(2, len(df)-1):
 # ======================
 only_trades = st.toggle("Show Only TRADE", False)
 
-df_view = df.copy()
-
-if only_trades:
-    df_view = df_view[df_view["Decision"] == "TRADE"]
-
+df_view = df[df["Decision"] == "TRADE"] if only_trades else df
 rows = list(df_view.iterrows())
 
 # ======================
-# BUTTONS (SAFE)
+# BUTTONS (NO KEY)
 # ======================
 col1, col2 = st.columns(2)
 
@@ -111,7 +107,7 @@ for col, t in zip(header, titles):
 
 for i, (idx, row) in enumerate(rows):
 
-    key = f"trade_{i}"   # 🔥 کاملاً یکتا
+    key = f"trade_{i}"  # فقط عدد → همیشه unique
 
     cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
@@ -136,7 +132,6 @@ for i, (idx, row) in enumerate(rows):
         cols[8].write("-")
 
     if row["Decision"] == "TRADE":
-
         cols[9].checkbox(
             "",
             key=key,
