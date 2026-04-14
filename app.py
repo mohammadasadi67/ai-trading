@@ -4,7 +4,7 @@ import numpy as np
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 REAL LIVE TRADING SYSTEM (TRADINGVIEW MODE)")
+st.title("🚀 FINAL LIVE (MATCH TRADINGVIEW)")
 
 # ======================
 # INPUT
@@ -19,10 +19,9 @@ with col2:
     capital = st.number_input("Capital ($)", value=1000)
 
 # ======================
-# GET HISTORICAL DATA (4H)
+# HISTORICAL
 # ======================
-def get_4h(symbol="BTCUSDT", start=None, end=None):
-
+def get_hist(start, end):
     url = "https://data-api.binance.vision/api/v3/klines"
 
     start_ms = int(pd.Timestamp(start).timestamp()*1000)
@@ -32,7 +31,7 @@ def get_4h(symbol="BTCUSDT", start=None, end=None):
 
     while True:
         params = {
-            "symbol": symbol,
+            "symbol": "BTCUSDT",
             "interval": "4h",
             "startTime": start_ms,
             "endTime": end_ms,
@@ -57,34 +56,22 @@ def get_4h(symbol="BTCUSDT", start=None, end=None):
     ])
 
     df["time"] = pd.to_datetime(df["time"], unit="ms")
-
     df = df[["time","open","high","low","close"]]
     df.columns = ["Time","Open","High","Low","Close"]
-
     df.set_index("Time", inplace=True)
     df = df.astype(float)
 
-    # 🔥 تبدیل به ساعت TradingView (عراق)
-    df.index = df.index.tz_localize("UTC").tz_convert("Asia/Baghdad")
-
     return df
 
-# ======================
-# LOAD DATA + BUFFER
-# ======================
-real_start = pd.Timestamp(start) - pd.Timedelta(days=2)
-df = get_4h(start=real_start, end=end)
-
-if df.empty:
-    st.error("No data")
-    st.stop()
+# buffer برای سیگنال
+df = get_hist(pd.Timestamp(start)-pd.Timedelta(days=2), end)
 
 # ======================
-# LIVE 1m DATA
+# LIVE 4H (REAL)
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 300}
+    params={"symbol": "BTCUSDT", "interval": "4h", "limit": 2}
 ).json()
 
 live_df = pd.DataFrame(live, columns=[
@@ -98,32 +85,9 @@ live_df.columns = ["Time","Open","High","Low","Close"]
 live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
-# 🔥 timezone هماهنگ
-live_df.index = live_df.index.tz_localize("UTC").tz_convert("Asia/Baghdad")
-
-# ======================
-# ساخت کندل 4H لایو (مثل TradingView)
-# ======================
-last_candle_time = df.index[-1]
-next_candle_time = last_candle_time + pd.Timedelta(hours=4)
-
-current = live_df[live_df.index >= next_candle_time]
-
-if not current.empty:
-
-    open_ = current["Open"].iloc[0]
-    high_ = current["High"].max()
-    low_  = current["Low"].min()
-    close_ = current["Close"].iloc[-1]
-
-    new_candle = pd.DataFrame({
-        "Open":[open_],
-        "High":[high_],
-        "Low":[low_],
-        "Close":[close_]
-    }, index=[next_candle_time])
-
-    df = pd.concat([df, new_candle])
+# 🔥 این مهمه:
+df = df.iloc[:-1]          # حذف آخرین قدیمی
+df = pd.concat([df, live_df])  # اضافه کردن واقعی
 
 # ======================
 # SIGNAL
@@ -138,12 +102,9 @@ for i in range(2, len(df)):
     prev1 = df.iloc[i-1]
     prev2 = df.iloc[i-2]
 
-    trend = prev1["Close"] > prev2["Close"]
-
-    if trend:
+    if prev1["Close"] > prev2["Close"]:
 
         entry = df["Open"].iloc[i]
-
         move = prev1["Close"] - prev2["Close"]
         target = entry + move
 
@@ -151,7 +112,6 @@ for i in range(2, len(df)):
         close = df["Close"].iloc[i]
 
         exit_price = target if high >= target else close
-
         pnl = (exit_price - entry) / entry * 100
 
         df.iloc[i, df.columns.get_loc("Decision")] = "TRADE"
@@ -160,10 +120,10 @@ for i in range(2, len(df)):
         df.iloc[i, df.columns.get_loc("PnL %")] = pnl
 
 # ======================
-# FILTER VIEW
+# FILTER
 # ======================
-df_view = df[(df.index >= pd.Timestamp(start).tz_localize("Asia/Baghdad")) & 
-             (df.index <= (pd.Timestamp(end)+pd.Timedelta(days=1)).tz_localize("Asia/Baghdad"))]
+df_view = df[(df.index >= pd.Timestamp(start)) & 
+             (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
 # ======================
 # TABLE
@@ -175,20 +135,17 @@ table = df_view.reset_index()[[
 
 table["Execute"] = False
 
-st.subheader("📊 ALL 4H CANDLES + LIVE (TradingView Match)")
-
-edited = st.data_editor(table, use_container_width=True)
+st.data_editor(table, use_container_width=True)
 
 # ======================
 # RESULT
 # ======================
 balance = capital
 
-for i in range(len(edited)):
-    if edited.iloc[i]["Execute"]:
-        pnl = edited.iloc[i]["PnL %"]
+for i in range(len(table)):
+    if table.iloc[i]["Execute"]:
+        pnl = table.iloc[i]["PnL %"]
         if pd.notna(pnl):
             balance *= (1 + pnl/100)
 
-st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
