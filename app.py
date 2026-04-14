@@ -16,7 +16,7 @@ setTimeout(function(){
 </script>
 """, unsafe_allow_html=True)
 
-st.title("🚀 LIVE SYSTEM FINAL")
+st.title("🚀 LIVE TRADING SYSTEM FINAL")
 
 # ======================
 # SESSION STATE (Execute)
@@ -55,14 +55,18 @@ def get_4h():
 df = get_4h()
 
 # ======================
-# LIVE PRICE (REAL)
+# LIVE PRICE (SAFE)
 # ======================
 ticker = requests.get(
     "https://api.binance.com/api/v3/ticker/price",
     params={"symbol": "BTCUSDT"}
 ).json()
 
-live_price = float(ticker["price"])
+# 🔥 ضد کرش
+if "price" in ticker:
+    live_price = float(ticker["price"])
+else:
+    live_price = df["Close"].iloc[-1]
 
 # ======================
 # LIVE 1m DATA (برای High/Low)
@@ -173,7 +177,7 @@ for i in range(len(edited)):
     st.session_state.exec[i] = edited.iloc[i]["Execute"]
 
 # ======================
-# RESULT
+# RESULT (فقط کندل بسته)
 # ======================
 balance = capital
 
@@ -181,7 +185,7 @@ for i in range(len(edited)):
 
     if st.session_state.exec.get(i, False):
 
-        if i < len(edited) - 1:  # فقط کندل بسته
+        if i < len(edited) - 1:
 
             entry = edited.iloc[i]["Entry"]
             target = edited.iloc[i]["Target"]
