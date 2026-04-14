@@ -6,14 +6,10 @@ import requests
 st.set_page_config(layout="wide")
 
 # ======================
-# AUTO REFRESH
+# AUTO REFRESH سبک‌تر
 # ======================
 st.markdown("""
-<script>
-setTimeout(function(){
-    window.location.reload();
-}, 3000);
-</script>
+<meta http-equiv="refresh" content="3">
 """, unsafe_allow_html=True)
 
 st.title("🚀 PRO TRADING PANEL")
@@ -58,7 +54,7 @@ def get_4h():
 df = get_4h()
 
 # ======================
-# NEW CANDLE (خام)
+# NEW CANDLE (LIVE)
 # ======================
 last_4h = df.index[-1]
 next_4h = last_4h + pd.Timedelta(hours=4)
@@ -74,7 +70,7 @@ if next_4h not in df.index:
     df = pd.concat([df, new_row]).sort_index()
 
 # ======================
-# SIGNAL
+# SIGNAL (اصلاح شده)
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -82,6 +78,10 @@ df["Target"] = np.nan
 df["PnL %"] = np.nan
 
 for i in range(2, len(df)-1):
+
+    # اگر کندل فعلی یا بعدی بسته نشده → رد کن
+    if pd.isna(df["Close"].iloc[i]) or pd.isna(df["Close"].iloc[i+1]):
+        continue
 
     prev1 = df.iloc[i-1]
     prev2 = df.iloc[i-2]
@@ -92,10 +92,11 @@ for i in range(2, len(df)-1):
         move = prev1["Close"] - prev2["Close"]
         target = entry + move
 
-        high = df["High"].iloc[i]
-        close = df["Close"].iloc[i]
+        # 🔥 خروج از کندل بعدی
+        high_next = df["High"].iloc[i+1]
+        close_next = df["Close"].iloc[i+1]
 
-        exit_price = target if high >= target else close
+        exit_price = target if high_next >= target else close_next
         pnl = (exit_price - entry) / entry * 100
 
         df.iloc[i, df.columns.get_loc("Decision")] = "TRADE"
@@ -130,21 +131,21 @@ for i, (idx, row) in enumerate(rows):
     key = str(idx)
     cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
-    # time
     cols[0].write(idx.strftime("%m-%d %H:%M"))
-
     cols[1].write(round(row["Open"],2))
     cols[2].write(round(row["High"],2))
     cols[3].write(round(row["Low"],2))
 
-    # close
-    if i == len(rows)-1:
-        cols[4].write("-")
+    # close یا LIVE
+    if pd.isna(row["Close"]):
+        cols[4].write("LIVE")
     else:
         cols[4].write(round(row["Close"],2))
 
-    # signal رنگی
-    if row["Decision"] == "TRADE":
+    # سیگنال
+    if pd.isna(row["Close"]):
+        cols[5].markdown("🟡 LIVE")
+    elif row["Decision"] == "TRADE":
         cols[5].markdown("🟢 TRADE")
     else:
         cols[5].markdown("⚪ WAIT")
@@ -152,16 +153,13 @@ for i, (idx, row) in enumerate(rows):
     cols[6].write(round(row["Entry"],2) if pd.notna(row["Entry"]) else "-")
     cols[7].write(round(row["Target"],2) if pd.notna(row["Target"]) else "-")
 
-    # pnl رنگی
+    # pnl
     if pd.notna(row["PnL %"]):
-        if row["PnL %"] > 0:
-            cols[8].markdown(f"<span style='color:green'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
-        else:
-            cols[8].markdown(f"<span style='color:red'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
+        color = "green" if row["PnL %"] > 0 else "red"
+        cols[8].markdown(f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
     else:
         cols[8].write("-")
 
-    # checkbox
     cols[9].checkbox(
         "",
         value=st.session_state.exec.get(key, False),
@@ -169,7 +167,7 @@ for i, (idx, row) in enumerate(rows):
     )
 
 # ======================
-# RESULT
+# RESULT (اصلاح کامل)
 # ======================
 balance = capital
 
@@ -179,15 +177,19 @@ for i, (idx, row) in enumerate(rows):
 
         if i < len(rows) - 1:
 
+            next_row = rows[i+1][1]
+
             entry = row["Entry"]
             target = row["Target"]
-            high = row["High"]
-            close = row["Close"]
 
-            if pd.notna(entry):
+            if pd.notna(entry) and pd.notna(next_row["Close"]):
+
+                high = next_row["High"]
+                close = next_row["Close"]
 
                 exit_price = target if high >= target else close
                 pnl = (exit_price - entry) / entry
+
                 balance *= (1 + pnl)
 
 st.markdown("### 💰 RESULT")
