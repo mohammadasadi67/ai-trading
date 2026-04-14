@@ -58,11 +58,17 @@ df = df[df.index.date >= start_date].copy()
 if not df.empty:
 
     # ======================
-    # STATUS COLUMN
+    # STATUS
     # ======================
     remaining, time_left = get_time_remaining()
     df["Status"] = "CLOSED"
     df.iloc[-1, df.columns.get_loc("Status")] = "LIVE"
+
+    # ======================
+    # CANDLE TYPE + O→C
+    # ======================
+    df["Candle"] = np.where(df["Close"] > df["Open"], "Bullish", "Bearish")
+    df["O→C"] = df["Open"].round(1).astype(str) + " → " + df["Close"].round(1).astype(str)
 
     # ======================
     # STRATEGY
@@ -123,7 +129,6 @@ if not df.empty:
     price = df["Close"].iloc[-1]
 
     c1, c2 = st.columns([2,1])
-
     c1.metric("BTC Price", f"${price:,.2f}")
     c2.metric("Next Candle", time_left)
 
@@ -138,19 +143,32 @@ if not df.empty:
     st.divider()
 
     # ======================
-    # TABLE (FULL)
+    # STYLE (رنگی)
+    # ======================
+    def color_candle(val):
+        if val == "Bullish":
+            return "color: #00ff9d; font-weight: bold;"
+        else:
+            return "color: #ff4d4d; font-weight: bold;"
+
+    styled_df = df.sort_index(ascending=False).style.applymap(
+        color_candle, subset=["Candle"]
+    )
+
+    # ======================
+    # TABLE
     # ======================
     st.subheader("Trading Logs")
 
     st.dataframe(
-        df.sort_index(ascending=False),
+        styled_df,
         use_container_width=True,
         height=600,
         column_config={
-            "Open": st.column_config.NumberColumn("Open", format="$%.1f"),
+            "O→C": "Open → Close",
+            "Candle": "Type",
             "High": st.column_config.NumberColumn("High", format="$%.1f"),
             "Low": st.column_config.NumberColumn("Low", format="$%.1f"),
-            "Close": st.column_config.NumberColumn("Close", format="$%.1f"),
             "Entry": st.column_config.NumberColumn("Entry", format="$%.1f"),
             "Target": st.column_config.NumberColumn("TP", format="$%.1f"),
             "StopLoss": st.column_config.NumberColumn("SL", format="$%.1f"),
