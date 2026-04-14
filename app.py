@@ -2,16 +2,24 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import time
 
 st.set_page_config(layout="wide")
-st.title("🚀 LIVE TRADING (1s UPDATE)")
 
 # ======================
-# AUTO REFRESH
+# AUTO REFRESH (1s)
 # ======================
-time.sleep(1)
-st.experimental_rerun()
+st.markdown(
+    """
+    <script>
+    setTimeout(function(){
+        window.location.reload();
+    }, 1000);
+    </script>
+    """,
+    unsafe_allow_html=True
+)
+
+st.title("🚀 LIVE TRADING SYSTEM")
 
 # ======================
 # INPUT
@@ -44,7 +52,7 @@ def get_4h(limit=200):
 df = get_4h()
 
 # ======================
-# LIVE DATA (چند دقیقه اخیر)
+# LIVE 1m DATA
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
@@ -130,23 +138,26 @@ table = df_view.reset_index()[[
 
 table["Execute"] = False
 
-st.data_editor(table, use_container_width=True)
+st.subheader("📊 LIVE CANDLES")
+
+edited = st.data_editor(table, use_container_width=True)
 
 # ======================
-# RESULT (PnL مثل قبل)
+# RESULT (PnL واقعی)
 # ======================
 balance = capital
 
-for i in range(len(table)):
+for i in range(len(edited)):
 
-    if table.iloc[i]["Execute"]:
+    if edited.iloc[i]["Execute"]:
 
-        entry = table.iloc[i]["Entry"]
-        target = table.iloc[i]["Target"]
-        close  = table.iloc[i]["Close"]
+        entry = edited.iloc[i]["Entry"]
+        target = edited.iloc[i]["Target"]
+        close  = edited.iloc[i]["Close"]
 
         if pd.notna(entry) and pd.notna(target):
 
+            # رسیدن به تارگت
             if close >= target:
                 pnl = (target - entry) / entry
             else:
@@ -154,4 +165,5 @@ for i in range(len(table)):
 
             balance *= (1 + pnl)
 
+st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
