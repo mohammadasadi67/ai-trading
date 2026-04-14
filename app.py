@@ -19,7 +19,7 @@ setTimeout(function(){
 st.title("🚀 LIVE TRADING SYSTEM FINAL")
 
 # ======================
-# SESSION STATE (Execute)
+# SESSION STATE
 # ======================
 if "exec" not in st.session_state:
     st.session_state.exec = {}
@@ -62,14 +62,10 @@ ticker = requests.get(
     params={"symbol": "BTCUSDT"}
 ).json()
 
-# 🔥 ضد کرش
-if "price" in ticker:
-    live_price = float(ticker["price"])
-else:
-    live_price = df["Close"].iloc[-1]
+live_price = float(ticker["price"]) if "price" in ticker else df["Close"].iloc[-1]
 
 # ======================
-# LIVE 1m DATA (برای High/Low)
+# LIVE 1m DATA
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
@@ -100,7 +96,7 @@ if not current.empty:
     open_ = current["Open"].iloc[0]
     high_ = max(current["High"].max(), live_price)
     low_  = min(current["Low"].min(), live_price)
-    close_ = live_price  # 🔥 لایو واقعی
+    close_ = live_price
 
     new_row = pd.DataFrame({
         "Open":[open_],
@@ -137,11 +133,7 @@ for i in range(2, len(df)):
         high = df["High"].iloc[i]
         close = df["Close"].iloc[i]
 
-        if high >= target:
-            exit_price = target
-        else:
-            exit_price = close
-
+        exit_price = target if high >= target else close
         pnl = (exit_price - entry) / entry * 100
 
         df.iloc[i, df.columns.get_loc("Decision")] = "TRADE"
@@ -165,25 +157,29 @@ table = df_view.reset_index()[[
     "Decision","Entry","Target","PnL %"
 ]].copy()
 
-# حفظ Execute
+# Execute با کلید Time
 table["Execute"] = [
-    st.session_state.exec.get(i, False) for i in range(len(table))
+    st.session_state.exec.get(str(row["Time"]), False)
+    for _, row in table.iterrows()
 ]
 
 edited = st.data_editor(table, use_container_width=True)
 
-# ذخیره تیک‌ها
+# ذخیره Execute
 for i in range(len(edited)):
-    st.session_state.exec[i] = edited.iloc[i]["Execute"]
+    key = str(edited.iloc[i]["Time"])
+    st.session_state.exec[key] = edited.iloc[i]["Execute"]
 
 # ======================
-# RESULT (فقط کندل بسته)
+# RESULT
 # ======================
 balance = capital
 
 for i in range(len(edited)):
 
-    if st.session_state.exec.get(i, False):
+    key = str(edited.iloc[i]["Time"])
+
+    if st.session_state.exec.get(key, False):
 
         if i < len(edited) - 1:
 
@@ -194,11 +190,7 @@ for i in range(len(edited)):
 
             if pd.notna(entry):
 
-                if high >= target:
-                    exit_price = target
-                else:
-                    exit_price = close
-
+                exit_price = target if high >= target else close
                 pnl = (exit_price - entry) / entry
                 balance *= (1 + pnl)
 
