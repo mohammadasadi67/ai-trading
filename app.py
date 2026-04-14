@@ -4,7 +4,7 @@ import numpy as np
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 FINAL CLEAN LIVE (NO BUG)")
+st.title("🚀 TRUE REAL-TIME TRADING (FINAL FIXED)")
 
 # ======================
 # INPUT
@@ -19,7 +19,7 @@ with col2:
     capital = st.number_input("Capital ($)", value=100)
 
 # ======================
-# HIST DATA
+# GET HISTORICAL 4H
 # ======================
 def get_hist(start, end):
 
@@ -57,8 +57,10 @@ def get_hist(start, end):
     ])
 
     df["time"] = pd.to_datetime(df["time"], unit="ms")
+
     df = df[["time","open","high","low","close"]]
     df.columns = ["Time","Open","High","Low","Close"]
+
     df.set_index("Time", inplace=True)
     df = df.astype(float)
 
@@ -67,12 +69,16 @@ def get_hist(start, end):
 # buffer برای سیگنال
 df = get_hist(pd.Timestamp(start)-pd.Timedelta(days=2), end)
 
+if df.empty:
+    st.error("No data")
+    st.stop()
+
 # ======================
-# LIVE (فقط کندل جاری)
+# LIVE 1m DATA
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "4h", "limit": 2}
+    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 300}
 ).json()
 
 live_df = pd.DataFrame(live, columns=[
@@ -83,21 +89,40 @@ live_df = pd.DataFrame(live, columns=[
 live_df["time"] = pd.to_datetime(live_df["time"], unit="ms")
 live_df = live_df[["time","open","high","low","close"]]
 live_df.columns = ["Time","Open","High","Low","Close"]
+
 live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
-# 👇 فقط آخرین کندل (در حال تشکیل)
-live_candle = live_df.iloc[-1]
+# ======================
+# ساخت کندل 4H لایو (FIX نهایی)
+# ======================
+last_time = live_df.index[-1]
 
-# 👇 حذف کندل تکراری اگر وجود داشت
-if live_candle.name in df.index:
-    df = df.drop(live_candle.name)
+# این خط مهم‌ترینه
+current_start = last_time.floor("4H")
 
-# 👇 اضافه کردن کندل لایو
-df.loc[live_candle.name] = live_candle
+current_data = live_df[live_df.index >= current_start]
 
-# 👇 مرتب‌سازی
-df = df.sort_index()
+if not current_data.empty:
+
+    open_ = current_data["Open"].iloc[0]
+    high_ = current_data["High"].max()
+    low_  = current_data["Low"].min()
+    close_ = current_data["Close"].iloc[-1]
+
+    new_candle = pd.DataFrame({
+        "Open":[open_],
+        "High":[high_],
+        "Low":[low_],
+        "Close":[close_]
+    }, index=[current_start])
+
+    # حذف تکراری
+    if current_start in df.index:
+        df = df.drop(current_start)
+
+    df = pd.concat([df, new_candle])
+    df = df.sort_index()
 
 # ======================
 # SIGNAL
@@ -132,7 +157,7 @@ for i in range(2, len(df)):
 # ======================
 # FILTER
 # ======================
-df_view = df[(df.index >= pd.Timestamp(start)) & 
+df_view = df[(df.index >= pd.Timestamp(start)) &
              (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
 # ======================
@@ -145,17 +170,20 @@ table = df_view.reset_index()[[
 
 table["Execute"] = False
 
-st.data_editor(table, use_container_width=True)
+st.subheader("📊 LIVE 4H CANDLES (REAL TIME)")
+
+edited = st.data_editor(table, use_container_width=True)
 
 # ======================
 # RESULT
 # ======================
 balance = capital
 
-for i in range(len(table)):
-    if table.iloc[i]["Execute"]:
-        pnl = table.iloc[i]["PnL %"]
+for i in range(len(edited)):
+    if edited.iloc[i]["Execute"]:
+        pnl = edited.iloc[i]["PnL %"]
         if pd.notna(pnl):
             balance *= (1 + pnl/100)
 
+st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
