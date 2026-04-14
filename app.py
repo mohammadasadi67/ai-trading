@@ -4,7 +4,7 @@ import numpy as np
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 TRUE LIVE SIGNAL (REAL TIME)")
+st.title("🚀 REAL LIVE TRADING SYSTEM (TRADINGVIEW MODE)")
 
 # ======================
 # INPUT
@@ -19,7 +19,7 @@ with col2:
     capital = st.number_input("Capital ($)", value=1000)
 
 # ======================
-# HISTORICAL 4H
+# GET HISTORICAL DATA (4H)
 # ======================
 def get_4h(symbol="BTCUSDT", start=None, end=None):
 
@@ -57,11 +57,15 @@ def get_4h(symbol="BTCUSDT", start=None, end=None):
     ])
 
     df["time"] = pd.to_datetime(df["time"], unit="ms")
+
     df = df[["time","open","high","low","close"]]
     df.columns = ["Time","Open","High","Low","Close"]
 
     df.set_index("Time", inplace=True)
     df = df.astype(float)
+
+    # 🔥 تبدیل به ساعت TradingView (عراق)
+    df.index = df.index.tz_localize("UTC").tz_convert("Asia/Baghdad")
 
     return df
 
@@ -70,6 +74,10 @@ def get_4h(symbol="BTCUSDT", start=None, end=None):
 # ======================
 real_start = pd.Timestamp(start) - pd.Timedelta(days=2)
 df = get_4h(start=real_start, end=end)
+
+if df.empty:
+    st.error("No data")
+    st.stop()
 
 # ======================
 # LIVE 1m DATA
@@ -90,13 +98,16 @@ live_df.columns = ["Time","Open","High","Low","Close"]
 live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
-# ======================
-# ساخت کندل 4H واقعی (در حال تشکیل)
-# ======================
-last_4h = df.index[-1]
-next_4h = last_4h + pd.Timedelta(hours=4)
+# 🔥 timezone هماهنگ
+live_df.index = live_df.index.tz_localize("UTC").tz_convert("Asia/Baghdad")
 
-current = live_df[live_df.index >= next_4h]
+# ======================
+# ساخت کندل 4H لایو (مثل TradingView)
+# ======================
+last_candle_time = df.index[-1]
+next_candle_time = last_candle_time + pd.Timedelta(hours=4)
+
+current = live_df[live_df.index >= next_candle_time]
 
 if not current.empty:
 
@@ -110,7 +121,7 @@ if not current.empty:
         "High":[high_],
         "Low":[low_],
         "Close":[close_]
-    }, index=[next_4h])
+    }, index=[next_candle_time])
 
     df = pd.concat([df, new_candle])
 
@@ -151,7 +162,8 @@ for i in range(2, len(df)):
 # ======================
 # FILTER VIEW
 # ======================
-df_view = df[(df.index >= pd.Timestamp(start)) & (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
+df_view = df[(df.index >= pd.Timestamp(start).tz_localize("Asia/Baghdad")) & 
+             (df.index <= (pd.Timestamp(end)+pd.Timedelta(days=1)).tz_localize("Asia/Baghdad"))]
 
 # ======================
 # TABLE
@@ -163,7 +175,7 @@ table = df_view.reset_index()[[
 
 table["Execute"] = False
 
-st.subheader("📊 LIVE 4H CANDLES")
+st.subheader("📊 ALL 4H CANDLES + LIVE (TradingView Match)")
 
 edited = st.data_editor(table, use_container_width=True)
 
