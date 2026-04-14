@@ -27,7 +27,10 @@ if isinstance(df.columns, pd.MultiIndex):
 df = df[["Open","High","Low","Close","Volume"]]
 
 # 💥 تبدیل زمان به لوکال
-df.index = df.index.tz_localize("UTC").tz_convert("Asia/Baghdad")
+if df.index.tz is None:
+    df.index = df.index.tz_localize("UTC").tz_convert("Asia/Baghdad")
+else:
+    df.index = df.index.tz_convert("Asia/Baghdad")
 
 df = df.dropna()
 
