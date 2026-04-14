@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timedelta, date
 
 st.set_page_config(layout="wide")
-st.title("🔥 SMART AI TRADING PANEL")
+st.title("🚀 SMART TRADING PANEL")
 
 # ======================
 # DATA
@@ -44,7 +44,6 @@ def get_fear_greed():
 def add_indicators(df):
     df["EMA200"] = df["Close"].ewm(span=200).mean()
 
-    # ATR
     df["H-L"] = df["High"] - df["Low"]
     df["H-C"] = abs(df["High"] - df["Close"].shift())
     df["L-C"] = abs(df["Low"] - df["Close"].shift())
@@ -71,6 +70,9 @@ def time_left():
 capital = st.sidebar.number_input("Capital", value=1000.0)
 fee = st.sidebar.slider("Fee %", 0.0, 0.5, 0.1) / 100
 start_date = st.sidebar.date_input("Start", value=date(2024,1,1))
+
+# 🔥 مود انتخابی
+mode = st.sidebar.radio("Strategy Mode", ["Normal", "Strict"])
 
 # ======================
 # LOAD
@@ -106,33 +108,34 @@ for i in range(200, len(df)):
     p2 = df.iloc[i-2]
     row = df.iloc[i]
 
-    # ======================
-    # SMART FILTERS
-    # ======================
-
-    # 1. Trend
-    if row["Close"] < row["EMA200"]:
-        continue
-
-    # 2. Fear
-    if fear > 75:
-        continue
-
-    # 3. Volatility
-    if row["ATR"] < row["Close"] * 0.003:
-        continue
-
-    # 4. Momentum
     move = (p1["Close"] - p2["Close"]) / p2["Close"]
-    if move < 0.004:
-        continue
+
+    # ======================
+    # MODE LOGIC
+    # ======================
+
+    if mode == "Strict":
+        # 🔥 سخت‌گیر
+        if row["Close"] < row["EMA200"]:
+            continue
+        if fear > 75:
+            continue
+        if row["ATR"] < row["Close"] * 0.003:
+            continue
+        if move < 0.004:
+            continue
+
+    else:
+        # ⚡ ساده (نسخه قبلی)
+        if move < 0.002:
+            continue
 
     # ======================
     # TRADE
     # ======================
     entry = row["Open"]
     sl = p1["Low"]
-    tp = entry + (move * entry * 1.5)
+    tp = entry + (move * entry * (1.5 if mode=="Strict" else 1.2))
 
     high = row["High"]
     low = row["Low"]
@@ -178,11 +181,7 @@ m2.metric("Profit", f"${final_balance-capital:,.2f}", f"{(balance-1)*100:.2f}%")
 m3.metric("Trades", trades)
 m4.metric("Avg Trade", f"{((balance**(1/max(trades,1)))-1)*100:.2f}%")
 
-st.dataframe(
-    df.sort_index(ascending=False),
-    use_container_width=True,
-    height=600
-)
+st.dataframe(df.sort_index(ascending=False), use_container_width=True, height=600)
 
 st.markdown(
     "<script>setTimeout(()=>window.location.reload(),20000)</script>",
