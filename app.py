@@ -55,7 +55,7 @@ def get_4h():
 df = get_4h()
 
 # ======================
-# ساخت کندل جدید (ثابت)
+# ساخت کندل جدید
 # ======================
 last_4h = df.index[-1]
 next_4h = last_4h + pd.Timedelta(hours=4)
@@ -65,7 +65,7 @@ if next_4h not in df.index:
         "Open":[df["Close"].iloc[-1]],
         "High":[df["Close"].iloc[-1]],
         "Low":[df["Close"].iloc[-1]],
-        "Close":[np.nan]  # ❗ مهم: خالی تا بسته شدن
+        "Close":[np.nan]
     }, index=[next_4h])
 
     df = pd.concat([df, new_row]).sort_index()
@@ -78,7 +78,7 @@ df["Entry"] = np.nan
 df["Target"] = np.nan
 df["PnL %"] = np.nan
 
-for i in range(2, len(df)-1):  # ❗ کندل آخر رو حساب نکن
+for i in range(2, len(df)-1):
 
     prev1 = df.iloc[i-1]
     prev2 = df.iloc[i-2]
@@ -103,47 +103,52 @@ for i in range(2, len(df)-1):  # ❗ کندل آخر رو حساب نکن
 # ======================
 # FILTER
 # ======================
-df.index.name = "Time"
-
 df_view = df[(df.index >= pd.Timestamp(start)) &
              (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
 # ======================
-# TABLE
+# TABLE + CHECKBOX
 # ======================
-table = df_view.reset_index()[[
-    "Time","Open","High","Low","Close",
-    "Decision","Entry","Target","PnL %"
-]].copy()
+st.subheader("📊 SIGNALS")
 
-# ID پایدار
-table["id"] = table["Time"].astype(str)
-table = table.set_index("id")
+rows = list(df_view.iterrows())
 
-# Execute
-table["Execute"] = [
-    st.session_state.exec.get(idx, False)
-    for idx in table.index
-]
+for i, (idx, row) in enumerate(rows):
 
-edited = st.data_editor(table, use_container_width=True)
+    key = str(idx)
 
-# ذخیره
-for idx in edited.index:
-    st.session_state.exec[idx] = edited.loc[idx, "Execute"]
+    col1, col2 = st.columns([8,1])
+
+    with col1:
+        st.write({
+            "Time": idx,
+            "Open": row["Open"],
+            "High": row["High"],
+            "Low": row["Low"],
+            "Close": row["Close"],
+            "Decision": row["Decision"],
+            "Entry": row["Entry"],
+            "Target": row["Target"],
+            "PnL %": row["PnL %"]
+        })
+
+    with col2:
+        st.session_state.exec[key] = st.checkbox(
+            "",
+            value=st.session_state.exec.get(key, False),
+            key=key
+        )
 
 # ======================
 # RESULT
 # ======================
 balance = capital
 
-for i, idx in enumerate(edited.index):
+for i, (idx, row) in enumerate(rows):
 
-    if st.session_state.exec.get(idx, False):
+    if st.session_state.exec.get(str(idx), False):
 
-        if i < len(edited) - 1:
-
-            row = edited.loc[idx]
+        if i < len(rows) - 1:
 
             entry = row["Entry"]
             target = row["Target"]
