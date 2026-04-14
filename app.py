@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timedelta, date
 
 st.set_page_config(layout="wide", page_title="Professional Trading Dashboard")
-st.title("MOHAMMAD PATTERN")
+st.title("🚀 MOHAMMAD PATTERN")
 
 # ======================
 # DATA
@@ -48,7 +48,7 @@ def get_time_remaining():
 initial_capital = st.sidebar.number_input("Capital", value=1000.0)
 fee_rate = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
 
-# ✅ دیفالت = 7 روز قبل
+# 🔥 فقط این قسمت تغییر کرده
 start_date = st.sidebar.date_input(
     "Start",
     value=date.today() - timedelta(days=7)
@@ -159,23 +159,7 @@ if not df.empty:
     st.dataframe(
         view_df,
         use_container_width=True,
-        height=600,
-        column_config={
-            "Candle": "Type",
-
-            "High": st.column_config.NumberColumn("High", format="$%.1f"),
-            "Low": st.column_config.NumberColumn("Low", format="$%.1f"),
-
-            "Entry": st.column_config.NumberColumn("Entry", format="$%.1f"),
-            "Target": st.column_config.NumberColumn("TP", format="$%.1f"),
-            "StopLoss": st.column_config.NumberColumn("SL", format="$%.1f"),
-
-            "PnL_Percent": st.column_config.NumberColumn("PnL %", format="%.2f%%"),
-
-            "Confidence": st.column_config.ProgressColumn(
-                "Confidence", min_value=0, max_value=1
-            ),
-        }
+        height=600
     )
 
 # ======================
