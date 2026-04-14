@@ -4,7 +4,7 @@ import numpy as np
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 REAL LIVE SIGNAL (BINANCE CORRECT)")
+st.title("🚀 REAL LIVE TRADING SYSTEM (BINANCE FINAL)")
 
 # ======================
 # INPUT
@@ -21,32 +21,65 @@ with col2:
 # ======================
 # HISTORICAL DATA
 # ======================
-def get_klines(symbol="BTCUSDT", interval="4h", limit=200):
-    url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    data = requests.get(url, params=params).json()
+def get_klines_range(symbol="BTCUSDT", interval="4h", start=None, end=None):
 
-    df = pd.DataFrame(data, columns=[
+    url = "https://data-api.binance.vision/api/v3/klines"
+
+    start_ms = int(pd.Timestamp(start).timestamp() * 1000)
+    end_ms   = int((pd.Timestamp(end) + pd.Timedelta(days=1)).timestamp() * 1000)
+
+    all_data = []
+
+    while True:
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "startTime": start_ms,
+            "endTime": end_ms,
+            "limit": 1000
+        }
+
+        data = requests.get(url, params=params).json()
+
+        if not data:
+            break
+
+        all_data.extend(data)
+
+        last_time = data[-1][0]
+
+        if len(data) < 1000:
+            break
+
+        start_ms = last_time + 1
+
+    df = pd.DataFrame(all_data, columns=[
         "time","open","high","low","close","volume",
         "close_time","qav","trades","tbbav","tbqav","ignore"
     ])
 
     df["time"] = pd.to_datetime(df["time"], unit="ms")
+
     df = df[["time","open","high","low","close"]]
     df.columns = ["Time","Open","High","Low","Close"]
+
     df.set_index("Time", inplace=True)
     df = df.astype(float)
 
     return df
 
-df = get_klines()
+df = get_klines_range(start=start, end=end)
+
+if df.empty:
+    st.error("No data")
+    st.stop()
 
 # ======================
-# LIVE CANDLE (REAL)
+# LIVE CANDLE (REAL FIX)
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "4h", "limit": 1}
+    params={"symbol": "BTCUSDT", "interval": "4h", "limit": 2}
 ).json()
 
 live_df = pd.DataFrame(live, columns=[
@@ -60,12 +93,15 @@ live_df.columns = ["Time","Open","High","Low","Close"]
 live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
-# حذف آخرین کندل بسته شده و جایگزینی با لایو
+# کندل در حال تشکیل
+current_candle = live_df.iloc[-1:]
+
+# حذف آخرین کندل قدیمی و جایگزینی با لایو
 df = df.iloc[:-1]
-df = pd.concat([df, live_df])
+df = pd.concat([df, current_candle])
 
 # ======================
-# SIGNAL
+# SIGNAL LOGIC
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -111,7 +147,7 @@ table = df.reset_index()[[
 
 table["Execute"] = False
 
-st.subheader("📊 ALL 4H + LIVE")
+st.subheader("📊 ALL 4H CANDLES + LIVE")
 
 edited = st.data_editor(table, use_container_width=True)
 
