@@ -41,6 +41,9 @@ if "df" not in st.session_state:
 if "last_price" not in st.session_state:
     st.session_state.last_price = None
 
+if "select_all" not in st.session_state:
+    st.session_state.select_all = False
+
 # ======================
 # WEBSOCKET
 # ======================
@@ -120,90 +123,85 @@ def apply_strategy(df):
     return df
 
 # ======================
-# UI LOOP
+# MAIN (NO LOOP)
 # ======================
-placeholder = st.empty()
+df = st.session_state.df.copy()
 
-while True:
+if not df.empty:
 
-    df = st.session_state.df.copy()
+    df = apply_strategy(df)
 
-    if not df.empty:
+    df_view = df[(df.index >= pd.Timestamp(start)) &
+                 (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
-        df = apply_strategy(df)
+    if only_trades:
+        df_view = df_view[df_view["Decision"] == "TRADE"]
 
-        df_view = df[(df.index >= pd.Timestamp(start)) &
-                     (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
+    rows = list(df_view.iterrows())
 
-        if only_trades:
-            df_view = df_view[df_view["Decision"] == "TRADE"]
+    st.subheader("📡 LIVE BTC")
 
-        rows = list(df_view.iterrows())
+    if st.session_state.last_price:
+        st.metric("BTC Price", f"{st.session_state.last_price:,.0f}")
 
-        with placeholder.container():
+    # ======================
+    # SELECT ALL (FIXED)
+    # ======================
+    c1, c2 = st.columns(2)
 
-            st.subheader("📡 LIVE BTC")
+    if c1.button("✅ Select All"):
+        st.session_state.select_all = True
 
-            if st.session_state.last_price:
-                st.metric("BTC Price", f"{st.session_state.last_price:,.0f}")
+    if c2.button("❌ Clear All"):
+        st.session_state.select_all = False
 
-            # ======================
-            # SELECT ALL
-            # ======================
-            c1, c2 = st.columns(2)
+    # ======================
+    # TABLE
+    # ======================
+    header = st.columns([2,1,1,1,1,1,1,1,1,1])
+    titles = ["Time","Open","High","Low","Close","Signal","Entry","Target","PnL %","✔"]
 
-            if c1.button("✅ Select All", key="select_all_btn"):
-                for idx, _ in rows:
-                    st.session_state[f"trade_{idx}"] = True
+    for col, t in zip(header, titles):
+        col.markdown(f"**{t}**")
 
-            if c2.button("❌ Clear All", key="clear_all_btn"):
-                for idx, _ in rows:
-                    st.session_state[f"trade_{idx}"] = False
+    for i, (idx, row) in enumerate(rows):
 
-            # ======================
-            # TABLE
-            # ======================
-            header = st.columns([2,1,1,1,1,1,1,1,1,1])
-            titles = ["Time","Open","High","Low","Close","Signal","Entry","Target","PnL %","✔"]
+        key = f"trade_{idx}"
+        cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
-            for col, t in zip(header, titles):
-                col.markdown(f"**{t}**")
+        cols[0].write(idx.strftime("%m-%d %H:%M"))
+        cols[1].write(round(row["Open"],2))
+        cols[2].write(round(row["High"],2))
+        cols[3].write(round(row["Low"],2))
+        cols[4].write(round(row["Close"],2) if pd.notna(row["Close"]) else "LIVE")
 
-            for i, (idx, row) in enumerate(rows):
+        if row["Decision"] == "TRADE":
+            cols[5].markdown("🟢 TRADE")
+        else:
+            cols[5].markdown("⚪ WAIT")
 
-                key = f"trade_{idx}"
-                cols = st.columns([2,1,1,1,1,1,1,1,1,1])
+        cols[6].write(round(row["Entry"],2) if pd.notna(row["Entry"]) else "-")
+        cols[7].write(round(row["Target"],2) if pd.notna(row["Target"]) else "-")
 
-                cols[0].write(idx.strftime("%m-%d %H:%M"))
-                cols[1].write(round(row["Open"],2))
-                cols[2].write(round(row["High"],2))
-                cols[3].write(round(row["Low"],2))
-                cols[4].write(round(row["Close"],2) if pd.notna(row["Close"]) else "LIVE")
+        if pd.notna(row["PnL %"]):
+            color = "green" if row["PnL %"] > 0 else "red"
+            cols[8].markdown(
+                f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>",
+                unsafe_allow_html=True
+            )
+        else:
+            cols[8].write("-")
 
-                if row["Decision"] == "TRADE":
-                    cols[5].markdown("🟢 TRADE")
-                else:
-                    cols[5].markdown("⚪ WAIT")
+        if row["Decision"] == "TRADE":
 
-                cols[6].write(round(row["Entry"],2) if pd.notna(row["Entry"]) else "-")
-                cols[7].write(round(row["Target"],2) if pd.notna(row["Target"]) else "-")
+            default_val = st.session_state.select_all
+            current_val = st.session_state.get(key, default_val)
 
-                if pd.notna(row["PnL %"]):
-                    color = "green" if row["PnL %"] > 0 else "red"
-                    cols[8].markdown(
-                        f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>",
-                        unsafe_allow_html=True
-                    )
-                else:
-                    cols[8].write("-")
+            cols[9].checkbox(
+                "",
+                value=current_val,
+                key=key
+            )
 
-                if row["Decision"] == "TRADE":
-                    cols[9].checkbox(
-                        "",
-                        value=st.session_state.get(key, False),
-                        key=key
-                    )
-                else:
-                    cols[9].write("—")
-
-    time.sleep(1)
+        else:
+            cols[9].write("—")
