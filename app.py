@@ -12,7 +12,7 @@ st.title("@-- mohammad asadollahzadeh")
 # ======================
 def get_live_data():
     url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": "ETHUSDT", "interval": "4h", "limit": 300}
+    params = {"symbol": "SOLUSDT", "interval": "4h", "limit": 300}
     data = requests.get(url, params=params).json()
 
     df = pd.DataFrame(data, columns=[
