@@ -5,25 +5,47 @@ import websocket
 import json
 import threading
 import time
+import requests
 
 st.set_page_config(layout="wide")
 st.title("🚀 REALTIME TRADING PANEL (WebSocket)")
 
 # ======================
+# LOAD INITIAL DATA
+# ======================
+@st.cache_data
+def load_history():
+    url = "https://data-api.binance.vision/api/v3/klines"
+    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 200}
+    data = requests.get(url, params=params).json()
+
+    df = pd.DataFrame(data, columns=[
+        "time","open","high","low","close","volume",
+        "close_time","qav","trades","tbbav","tbqav","ignore"
+    ])
+
+    df["time"] = pd.to_datetime(df["time"], unit="ms")
+    df = df[["time","open","high","low","close"]]
+    df.columns = ["Time","Open","High","Low","Close"]
+    df.set_index("Time", inplace=True)
+    df = df.astype(float)
+
+    return df
+
+# ======================
 # STATE
 # ======================
 if "df" not in st.session_state:
-    st.session_state.df = pd.DataFrame(columns=["Time","Open","High","Low","Close"])
+    st.session_state.df = load_history()
 
 if "last_price" not in st.session_state:
     st.session_state.last_price = None
 
 # ======================
-# WEBSOCKET HANDLER
+# WEBSOCKET
 # ======================
 def on_message(ws, message):
     data = json.loads(message)
-
     k = data["k"]
 
     t = pd.to_datetime(k["t"], unit="ms")
@@ -31,17 +53,12 @@ def on_message(ws, message):
     h = float(k["h"])
     l = float(k["l"])
     c = float(k["c"])
-    closed = k["x"]
 
     st.session_state.last_price = c
 
     df = st.session_state.df
 
-    if t in df.index:
-        df.loc[t] = [o, h, l, c]
-    else:
-        df.loc[t] = [o, h, l, c]
-
+    df.loc[t] = [o, h, l, c]
     st.session_state.df = df.sort_index().tail(200)
 
 def run_ws():
@@ -52,7 +69,7 @@ def run_ws():
     ws.run_forever()
 
 # ======================
-# START THREAD
+# START WS
 # ======================
 if "ws_started" not in st.session_state:
     thread = threading.Thread(target=run_ws)
@@ -61,7 +78,7 @@ if "ws_started" not in st.session_state:
     st.session_state.ws_started = True
 
 # ======================
-# SIGNAL LOGIC
+# STRATEGY
 # ======================
 def apply_strategy(df):
 
@@ -100,7 +117,7 @@ def apply_strategy(df):
     return df
 
 # ======================
-# UI LOOP (بدون رفرش)
+# UI
 # ======================
 placeholder = st.empty()
 
@@ -119,6 +136,6 @@ while True:
             if st.session_state.last_price:
                 st.metric("BTC Price", f"{st.session_state.last_price:,.0f}")
 
-            st.dataframe(df.tail(15), use_container_width=True)
+            st.dataframe(df.tail(20), use_container_width=True)
 
     time.sleep(1)
