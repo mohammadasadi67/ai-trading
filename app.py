@@ -1,30 +1,16 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import websocket
-import json
-import threading
-import time
 import requests
 
 st.set_page_config(layout="wide")
-st.title("🚀 PRO REALTIME TRADING PANEL")
+st.title("🚀 TRADING PANEL")
 
 # ======================
-# AUTO RERUN (NO LOOP)
-# ======================
-if "last_run" not in st.session_state:
-    st.session_state.last_run = time.time()
-
-if time.time() - st.session_state.last_run > 2:
-    st.session_state.last_run = time.time()
-    st.rerun()
-
-# ======================
-# LOAD HISTORY
+# DATA
 # ======================
 @st.cache_data
-def load_history():
+def get_data():
     url = "https://data-api.binance.vision/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 200}
     data = requests.get(url, params=params).json()
@@ -42,166 +28,105 @@ def load_history():
 
     return df
 
+df = get_data()
+
 # ======================
 # STATE
 # ======================
-if "df" not in st.session_state:
-    st.session_state.df = load_history()
-
-if "last_price" not in st.session_state:
-    st.session_state.last_price = None
-
 if "select_all" not in st.session_state:
     st.session_state.select_all = False
 
 # ======================
-# WEBSOCKET
-# ======================
-def on_message(ws, message):
-    data = json.loads(message)
-    k = data["k"]
-
-    t = pd.to_datetime(k["t"], unit="ms")
-    o = float(k["o"])
-    h = float(k["h"])
-    l = float(k["l"])
-    c = float(k["c"])
-
-    st.session_state.last_price = c
-
-    df = st.session_state.df
-    df.loc[t] = [o, h, l, c]
-    st.session_state.df = df.sort_index().tail(200)
-
-def run_ws():
-    ws = websocket.WebSocketApp(
-        "wss://stream.binance.com:9443/ws/btcusdt@kline_4h",
-        on_message=on_message
-    )
-    ws.run_forever()
-
-if "ws_started" not in st.session_state:
-    threading.Thread(target=run_ws, daemon=True).start()
-    st.session_state.ws_started = True
-
-# ======================
-# INPUT
-# ======================
-col1, col2 = st.columns(2)
-start = col1.date_input("Start", value=st.session_state.df.index.min().date(), key="start_date")
-end   = col2.date_input("End", value=st.session_state.df.index.max().date(), key="end_date")
-
-only_trades = st.toggle("Show Only TRADE", False, key="only_trades")
-
-# ======================
 # STRATEGY
 # ======================
-def apply_strategy(df):
+df["Decision"] = "WAIT"
+df["Entry"] = np.nan
+df["Target"] = np.nan
+df["PnL %"] = np.nan
 
-    df = df.copy()
+for i in range(2, len(df)-1):
 
-    df["Decision"] = "WAIT"
-    df["Entry"] = np.nan
-    df["Target"] = np.nan
-    df["PnL %"] = np.nan
+    prev1 = df.iloc[i-1]
+    prev2 = df.iloc[i-2]
 
-    for i in range(2, len(df)-1):
+    if prev1["Close"] > prev2["Close"]:
 
-        if pd.isna(df["Close"].iloc[i]) or pd.isna(df["Close"].iloc[i+1]):
-            continue
+        entry = df["Open"].iloc[i]
+        move = prev1["Close"] - prev2["Close"]
+        target = entry + move
 
-        prev1 = df.iloc[i-1]
-        prev2 = df.iloc[i-2]
+        high_next = df["High"].iloc[i+1]
+        close_next = df["Close"].iloc[i+1]
 
-        if prev1["Close"] > prev2["Close"]:
+        exit_price = target if high_next >= target else close_next
+        pnl = (exit_price - entry) / entry * 100
 
-            entry = df["Open"].iloc[i]
-            move = prev1["Close"] - prev2["Close"]
-            target = entry + move
-
-            high_next = df["High"].iloc[i+1]
-            close_next = df["Close"].iloc[i+1]
-
-            exit_price = target if high_next >= target else close_next
-            pnl = (exit_price - entry) / entry * 100
-
-            df.iloc[i, df.columns.get_loc("Decision")] = "TRADE"
-            df.iloc[i, df.columns.get_loc("Entry")] = entry
-            df.iloc[i, df.columns.get_loc("Target")] = target
-            df.iloc[i, df.columns.get_loc("PnL %")] = pnl
-
-    return df
+        df.iloc[i, df.columns.get_loc("Decision")] = "TRADE"
+        df.iloc[i, df.columns.get_loc("Entry")] = entry
+        df.iloc[i, df.columns.get_loc("Target")] = target
+        df.iloc[i, df.columns.get_loc("PnL %")] = pnl
 
 # ======================
-# MAIN
+# FILTER
 # ======================
-df = st.session_state.df.copy()
+only_trades = st.toggle("Show Only TRADE", False)
 
-if not df.empty:
+df_view = df.copy()
 
-    df = apply_strategy(df)
+if only_trades:
+    df_view = df_view[df_view["Decision"] == "TRADE"]
 
-    df_view = df[(df.index >= pd.Timestamp(start)) &
-                 (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
+rows = list(df_view.iterrows())
 
-    if only_trades:
-        df_view = df_view[df_view["Decision"] == "TRADE"]
+# ======================
+# BUTTONS (NO DUPLICATE KEY)
+# ======================
+c1, c2 = st.columns(2)
 
-    rows = list(df_view.iterrows())
+if c1.button("✅ Select All"):
+    st.session_state.select_all = True
 
-    st.subheader("📡 LIVE BTC")
+if c2.button("❌ Clear All"):
+    st.session_state.select_all = False
 
-    if st.session_state.last_price:
-        st.metric("BTC Price", f"{st.session_state.last_price:,.0f}")
+# ======================
+# TABLE
+# ======================
+header = st.columns([2,1,1,1,1,1,1,1,1,1])
+titles = ["Time","Open","High","Low","Close","Signal","Entry","Target","PnL %","✔"]
 
-    # ======================
-    # SELECT ALL (SAFE)
-    # ======================
-    c1, c2 = st.columns(2)
+for col, t in zip(header, titles):
+    col.markdown(f"**{t}**")
 
-    if c1.button("✅ Select All", key="btn_select_all"):
-        st.session_state.select_all = True
+for i, (idx, row) in enumerate(rows):
 
-    if c2.button("❌ Clear All", key="btn_clear_all"):
-        st.session_state.select_all = False
+    key = f"trade_{i}"   # 🔥 فقط این مهمه
 
-    # ======================
-    # TABLE
-    # ======================
-    header = st.columns([2,1,1,1,1,1,1,1,1,1])
-    titles = ["Time","Open","High","Low","Close","Signal","Entry","Target","PnL %","✔"]
+    cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
-    for col, t in zip(header, titles):
-        col.markdown(f"**{t}**")
+    cols[0].write(idx.strftime("%m-%d %H:%M"))
+    cols[1].write(round(row["Open"],2))
+    cols[2].write(round(row["High"],2))
+    cols[3].write(round(row["Low"],2))
+    cols[4].write(round(row["Close"],2))
 
-    for i, (idx, row) in enumerate(rows):
+    cols[5].markdown("🟢 TRADE" if row["Decision"]=="TRADE" else "⚪ WAIT")
 
-        key = f"trade_{idx}"
+    cols[6].write(round(row["Entry"],2) if pd.notna(row["Entry"]) else "-")
+    cols[7].write(round(row["Target"],2) if pd.notna(row["Target"]) else "-")
 
-        cols = st.columns([2,1,1,1,1,1,1,1,1,1])
+    if pd.notna(row["PnL %"]):
+        color = "green" if row["PnL %"] > 0 else "red"
+        cols[8].markdown(f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
+    else:
+        cols[8].write("-")
 
-        cols[0].write(idx.strftime("%m-%d %H:%M"))
-        cols[1].write(round(row["Open"],2))
-        cols[2].write(round(row["High"],2))
-        cols[3].write(round(row["Low"],2))
-        cols[4].write(round(row["Close"],2) if pd.notna(row["Close"]) else "LIVE")
+    if row["Decision"] == "TRADE":
 
-        cols[5].markdown("🟢 TRADE" if row["Decision"]=="TRADE" else "⚪ WAIT")
-
-        cols[6].write(round(row["Entry"],2) if pd.notna(row["Entry"]) else "-")
-        cols[7].write(round(row["Target"],2) if pd.notna(row["Target"]) else "-")
-
-        if pd.notna(row["PnL %"]):
-            color = "green" if row["PnL %"] > 0 else "red"
-            cols[8].markdown(f"<span style='color:{color}'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
-        else:
-            cols[8].write("-")
-
-        if row["Decision"] == "TRADE":
-            cols[9].checkbox(
-                "",
-                key=key,
-                value=st.session_state.get(key, st.session_state.select_all)
-            )
-        else:
-            cols[9].write("—")
+        cols[9].checkbox(
+            "",
+            key=key,
+            value=st.session_state.get(key, st.session_state.select_all)
+        )
+    else:
+        cols[9].write("—")
