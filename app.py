@@ -13,14 +13,14 @@ st.title("🚀 REALTIME PANEL")
 if "last_run" not in st.session_state:
     st.session_state.last_run = time.time()
 
-if time.time() - st.session_state.last_run > 4:
+if time.time() - st.session_state.last_run > 5:
     st.session_state.last_run = time.time()
     st.rerun()
 
 # ======================
 # DATA
 # ======================
-@st.cache_data(ttl=2)
+@st.cache_data(ttl=3)
 def get_data():
     url = "https://data-api.binance.vision/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 200}
@@ -90,7 +90,7 @@ for col, t in zip(header, titles):
 
 for i, (idx, row) in enumerate(rows):
 
-    key = f"trade_{idx.strftime('%Y%m%d%H%M')}"  # 🔥 پایدار
+    key = f"trade_{idx.strftime('%Y%m%d%H%M')}"
 
     cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
@@ -116,13 +116,11 @@ for i, (idx, row) in enumerate(rows):
 
     if row["Decision"] == "TRADE":
 
-        # فقط بار اول → سودده‌ها تیک بخورن
+        # فقط بار اول → سودده‌ها تیک
         if key not in st.session_state:
             st.session_state[key] = row["PnL %"] > 0
 
-        cols[9].checkbox(
-            "",
-            key=key
-        )
+        cols[9].checkbox("", key=key)
+
     else:
         cols[9].write("—")
