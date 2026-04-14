@@ -6,7 +6,7 @@ import requests
 st.set_page_config(layout="wide")
 
 # ======================
-# AUTO REFRESH (آروم)
+# AUTO REFRESH
 # ======================
 st.markdown("""
 <script>
@@ -16,10 +16,10 @@ setTimeout(function(){
 </script>
 """, unsafe_allow_html=True)
 
-st.title("🚀 LIVE TRADING SYSTEM")
+st.title("🚀 PRO TRADING PANEL")
 
 # ======================
-# SESSION STATE
+# STATE
 # ======================
 if "exec" not in st.session_state:
     st.session_state.exec = {}
@@ -27,12 +27,15 @@ if "exec" not in st.session_state:
 # ======================
 # INPUT
 # ======================
-start = st.date_input("Start Date")
-end   = st.date_input("End Date")
-capital = st.number_input("Capital", value=100)
+col1, col2, col3 = st.columns(3)
+start = col1.date_input("Start")
+end   = col2.date_input("End")
+capital = col3.number_input("Capital", value=100)
+
+only_trades = st.toggle("Show Only TRADE", False)
 
 # ======================
-# GET 4H DATA
+# DATA
 # ======================
 def get_4h():
     url = "https://data-api.binance.vision/api/v3/klines"
@@ -55,7 +58,7 @@ def get_4h():
 df = get_4h()
 
 # ======================
-# ساخت کندل جدید
+# NEW CANDLE (خام)
 # ======================
 last_4h = df.index[-1]
 next_4h = last_4h + pd.Timedelta(hours=4)
@@ -71,7 +74,7 @@ if next_4h not in df.index:
     df = pd.concat([df, new_row]).sort_index()
 
 # ======================
-# SIGNAL + PnL
+# SIGNAL
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -106,38 +109,64 @@ for i in range(2, len(df)-1):
 df_view = df[(df.index >= pd.Timestamp(start)) &
              (df.index <= pd.Timestamp(end)+pd.Timedelta(days=1))]
 
-# ======================
-# TABLE + CHECKBOX
-# ======================
-st.subheader("📊 SIGNALS")
+if only_trades:
+    df_view = df_view[df_view["Decision"] == "TRADE"]
 
 rows = list(df_view.iterrows())
+
+# ======================
+# TABLE UI
+# ======================
+st.markdown("### 📊 SIGNAL TABLE")
+
+header = st.columns([2,1,1,1,1,1,1,1,1,1])
+titles = ["Time","Open","High","Low","Close","Signal","Entry","Target","PnL %","✔"]
+
+for col, t in zip(header, titles):
+    col.markdown(f"**{t}**")
 
 for i, (idx, row) in enumerate(rows):
 
     key = str(idx)
+    cols = st.columns([2,1,1,1,1,1,1,1,1,1])
 
-    col1, col2 = st.columns([8,1])
+    # time
+    cols[0].write(idx.strftime("%m-%d %H:%M"))
 
-    with col1:
-        st.write({
-            "Time": idx,
-            "Open": row["Open"],
-            "High": row["High"],
-            "Low": row["Low"],
-            "Close": row["Close"],
-            "Decision": row["Decision"],
-            "Entry": row["Entry"],
-            "Target": row["Target"],
-            "PnL %": row["PnL %"]
-        })
+    cols[1].write(round(row["Open"],2))
+    cols[2].write(round(row["High"],2))
+    cols[3].write(round(row["Low"],2))
 
-    with col2:
-        st.session_state.exec[key] = st.checkbox(
-            "",
-            value=st.session_state.exec.get(key, False),
-            key=key
-        )
+    # close
+    if i == len(rows)-1:
+        cols[4].write("-")
+    else:
+        cols[4].write(round(row["Close"],2))
+
+    # signal رنگی
+    if row["Decision"] == "TRADE":
+        cols[5].markdown("🟢 TRADE")
+    else:
+        cols[5].markdown("⚪ WAIT")
+
+    cols[6].write(round(row["Entry"],2) if pd.notna(row["Entry"]) else "-")
+    cols[7].write(round(row["Target"],2) if pd.notna(row["Target"]) else "-")
+
+    # pnl رنگی
+    if pd.notna(row["PnL %"]):
+        if row["PnL %"] > 0:
+            cols[8].markdown(f"<span style='color:green'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
+        else:
+            cols[8].markdown(f"<span style='color:red'>{round(row['PnL %'],3)}</span>", unsafe_allow_html=True)
+    else:
+        cols[8].write("-")
+
+    # checkbox
+    cols[9].checkbox(
+        "",
+        value=st.session_state.exec.get(key, False),
+        key=key
+    )
 
 # ======================
 # RESULT
@@ -161,5 +190,5 @@ for i, (idx, row) in enumerate(rows):
                 pnl = (exit_price - entry) / entry
                 balance *= (1 + pnl)
 
-st.subheader("💰 RESULT")
+st.markdown("### 💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
