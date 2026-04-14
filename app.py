@@ -4,19 +4,15 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🚀 SMART HOLD STRATEGY")
+st.title("🚀 ONE CANDLE STRATEGY")
 
 # ======================
 # INPUT
 # ======================
-col1, col2 = st.columns(2)
+start = st.date_input("Start")
+end   = st.date_input("End")
 
-with col1:
-    start = st.date_input("Start")
-    end   = st.date_input("End")
-
-with col2:
-    capital = st.number_input("Capital ($)", value=1000)
+capital = st.number_input("Capital ($)", value=1000)
 
 # ======================
 # DATA
@@ -26,97 +22,68 @@ df = yf.download("BTC-USD", interval="4h", start=start, end=end)
 if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
 
-df = df[["Open","High","Low","Close","Volume"]]
+df = df[["Open","High","Low","Close"]]
 
 # ======================
-# SIGNAL (پنهان)
+# TREND (ساده)
 # ======================
-vol_avg = df["Volume"].rolling(20).mean()
-signal = df["Volume"] > vol_avg
+df["Trend"] = df["Close"].shift(1) > df["Close"].shift(2)
 
 # ======================
-# ENTRY / EXIT LOGIC
+# ENTRY / TARGET / PNL
 # ======================
+df["Decision"] = np.where(df["Trend"], "TRADE", "WAIT")
 df["Entry"] = np.nan
 df["Target"] = np.nan
-df["Exit"] = np.nan
 df["PnL %"] = np.nan
 
-for i in range(len(df)-1):
+for i in range(2, len(df)):
 
-    if signal.iloc[i]:
+    if df["Trend"].iloc[i]:
 
-        entry = df["Close"].iloc[i]
-        target = entry * 1.05
+        entry = df["Open"].iloc[i]
 
-        prev_close = entry
-        max_high = entry
-        exit_price = entry
+        # تارگت بر اساس روند (حرکت قبلی)
+        prev_move = df["Close"].iloc[i-1] - df["Close"].iloc[i-2]
+        target = entry + prev_move
 
-        for j in range(i+1, len(df)):
+        high = df["High"].iloc[i]
+        close = df["Close"].iloc[i]
 
-            close = df["Close"].iloc[j]
-            high = df["High"].iloc[j]
-
-            # اگر تارگت خورد
-            if high >= target:
-                exit_price = target
-                break
-
-            # کندل خوب؟
-            good_candle = (close > prev_close) or (high > max_high)
-
-            if good_candle:
-                prev_close = close
-                max_high = max(max_high, high)
-                exit_price = close
-            else:
-                # کندل بد → خروج
-                exit_price = close
-                break
+        # برخورد به تارگت؟
+        if high >= target:
+            exit_price = target
+        else:
+            exit_price = close
 
         pnl = (exit_price - entry) / entry * 100
 
         df.at[df.index[i], "Entry"] = entry
         df.at[df.index[i], "Target"] = target
-        df.at[df.index[i], "Exit"] = exit_price
         df.at[df.index[i], "PnL %"] = pnl
-
-# ======================
-# DECISION
-# ======================
-df["Decision"] = np.where(signal, "TRADE", "WAIT")
 
 # ======================
 # TABLE
 # ======================
 table = df[[
     "Open","High","Low","Close",
-    "Decision","Entry","Target","Exit","PnL %"
+    "Decision","Entry","Target","PnL %"
 ]].copy()
 
 table["Execute"] = False
 
-st.subheader("📊 ALL 4H CANDLES")
-
-edited = st.data_editor(table, use_container_width=True)
+st.data_editor(table, use_container_width=True)
 
 # ======================
 # SIMULATION
 # ======================
 balance = capital
 
-for i in range(len(edited)):
-
-    if edited["Execute"].iloc[i]:
-
-        pnl = edited["PnL %"].iloc[i]
-
+for i in range(len(table)):
+    if table["Execute"].iloc[i]:
+        pnl = table["PnL %"].iloc[i]
         if not np.isnan(pnl):
             balance *= (1 + pnl / 100)
 
-# ======================
-# RESULT
-# ======================
 st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
