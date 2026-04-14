@@ -16,7 +16,7 @@ setTimeout(function(){
 </script>
 """, unsafe_allow_html=True)
 
-st.title("🚀 LIVE SYSTEM (STABLE)")
+st.title("🚀 LIVE SYSTEM (FINAL)")
 
 # ======================
 # INPUT
@@ -53,7 +53,7 @@ df = get_4h()
 # ======================
 live = requests.get(
     "https://data-api.binance.vision/api/v3/klines",
-    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 20}
+    params={"symbol": "BTCUSDT", "interval": "1m", "limit": 50}
 ).json()
 
 live_df = pd.DataFrame(live, columns=[
@@ -68,11 +68,12 @@ live_df.set_index("Time", inplace=True)
 live_df = live_df.astype(float)
 
 # ======================
-# BUILD CURRENT CANDLE (همون نسخه قبلی درست)
+# BUILD CURRENT CANDLE
 # ======================
 last_4h = df.index[-1]
 next_4h = last_4h + pd.Timedelta(hours=4)
 
+# 🔥 مهم: دیتا از شروع کندل جدید
 current = live_df[live_df.index >= last_4h]
 
 if not current.empty:
@@ -80,7 +81,7 @@ if not current.empty:
     open_ = current["Open"].iloc[0]
     high_ = current["High"].max()
     low_  = current["Low"].min()
-    close_ = current["Close"].iloc[-1]  # 🔥 لایو واقعی
+    close_ = current["Close"].iloc[-1]  # 🔥 لایو
 
     new_row = pd.DataFrame({
         "Open":[open_],
@@ -96,7 +97,7 @@ if not current.empty:
     df = df.sort_index()
 
 # ======================
-# SIGNAL + PnL (اصلاح شده)
+# SIGNAL + PnL
 # ======================
 df["Decision"] = "WAIT"
 df["Entry"] = np.nan
@@ -117,7 +118,7 @@ for i in range(2, len(df)):
         high = df["High"].iloc[i]
         close = df["Close"].iloc[i]
 
-        # 🔥 منطق درست PnL
+        # 🔥 منطق درست
         if high >= target:
             exit_price = target
         else:
@@ -151,16 +152,32 @@ table["Execute"] = False
 edited = st.data_editor(table, use_container_width=True)
 
 # ======================
-# RESULT (اصلاح شده)
+# RESULT (فقط کندل بسته)
 # ======================
 balance = capital
 
 for i in range(len(edited)):
+
     if edited.iloc[i]["Execute"]:
 
-        pnl = edited.iloc[i]["PnL %"]
+        # ❗ کندل آخر (لایو) محاسبه نشه
+        if i < len(edited) - 1:
 
-        if pd.notna(pnl):
-            balance *= (1 + pnl/100)
+            entry = edited.iloc[i]["Entry"]
+            target = edited.iloc[i]["Target"]
+            high = edited.iloc[i]["High"]
+            close = edited.iloc[i]["Close"]
 
+            if pd.notna(entry) and pd.notna(target):
+
+                if high >= target:
+                    exit_price = target
+                else:
+                    exit_price = close
+
+                pnl = (exit_price - entry) / entry
+
+                balance *= (1 + pnl)
+
+st.subheader("💰 RESULT")
 st.metric("Final Balance", f"${balance:.2f}")
