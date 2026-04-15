@@ -2,137 +2,134 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
+from datetime import datetime
 from stable_baselines3 import PPO
 import gymnasium as gym
 from gymnasium import spaces
 
 # --- تنظیمات صفحه ---
-st.set_page_config(layout="wide", page_title="RL 2000 Candle Dashboard")
-st.title("🤖 MOHAMMAD PATTERN (RL 2000+ Candles)")
+st.set_page_config(layout="wide", page_title="AI Trading Dashboard")
+st.title("🤖 MOHAMMAD PATTERN (RL Advanced Backtest)")
 
 # ======================
-# 1. DATA FETCHING (2000 CANDLES)
+# 1. دریافت ۲۰۰۰ کندل
 # ======================
 @st.cache_data(ttl=300)
-def get_historical_data(symbol="BTCUSDT", interval="4h", total_candles=2000):
+def get_data_2000(symbol="BTCUSDT", interval="4h"):
     url = "https://data-api.binance.vision/api/v3/klines"
     all_candles = []
     last_time = None
     
-    # چون بایننس در هر بار حداکثر 1000 تا می‌دهد، در دو مرحله می‌گیریم
-    iterations = (total_candles // 1000) + (1 if total_candles % 1000 != 0 else 0)
-    
-    try:
-        for _ in range(iterations):
-            params = {
-                "symbol": symbol,
-                "interval": interval,
-                "limit": 1000
-            }
-            if last_time:
-                params["endTime"] = last_time - 1 # یک میلی‌ثانیه قبل از آخرین کندل گرفته شده
-            
-            response = requests.get(url, params=params).json()
-            if not response:
-                break
-                
-            all_candles = response + all_candles # اضافه کردن به ابتدای لیست
-            last_time = response[0][0] # زمان اولین کندل در این دسته
-            
-        df = pd.DataFrame(all_candles, columns=[
-            "time","open","high","low","close","volume",
-            "ct","qav","trades","tb","tq","ig"
-        ])
+    # دریافت در دو مرحله (چون سقف هر درخواست ۱۰۰۰ تاست)
+    for _ in range(2):
+        params = {"symbol": symbol, "interval": interval, "limit": 1000}
+        if last_time: params["endTime"] = last_time - 1
+        res = requests.get(url, params=params).json()
+        all_candles = res + all_candles
+        last_time = res[0][0]
         
-        df["time"] = pd.to_datetime(df["time"], unit="ms")
-        df[["open","high","low","close", "volume"]] = df[["open","high","low","close", "volume"]].astype(float)
-        
-        # حذف داده‌های تکراری احتمالی و مرتب‌سازی
-        df = df.drop_duplicates(subset="time").sort_values("time").reset_index(drop=True)
-        return df.tail(total_candles) # اطمینان از خروجی دقیقاً 2000 تا
-    except Exception as e:
-        st.error(f"خطا در دریافت داده: {e}")
-        return pd.DataFrame()
+    df = pd.DataFrame(all_candles, columns=["time","open","high","low","close","volume","ct","qav","trades","tb","tq","ig"])
+    df["time"] = pd.to_datetime(df["time"], unit="ms")
+    df[["open","high","low","close"]] = df[["open","high","low","close"]].astype(float)
+    return df.sort_values("time").reset_index(drop=True)
 
 # ======================
-# 2. RL ENVIRONMENT
+# 2. محیط معاملاتی برای RL
 # ======================
 class TradingEnv(gym.Env):
     def __init__(self, df):
-        super(TradingEnv, self).__init__()
+        super().__init__()
         self.df = df
-        self.action_space = spaces.Discrete(3) # 0=Hold, 1=Buy, 2=Sell
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32)
+        self.action_space = spaces.Discrete(2) # 0: Wait, 1: Buy
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(5,), dtype=np.float32)
         self.reset()
 
     def reset(self, seed=None, options=None):
-        self.current_step = 10
+        self.current_step = 1
         return self._get_obs(), {}
 
     def _get_obs(self):
         row = self.df.iloc[self.current_step]
-        # ویژگی‌ها: قیمت‌ها + حجم (نرمال‌سازی ساده با لگاریتم یا تقسیم بر قیمت قبلی)
-        obs = np.array([
-            row['open'] / row['close'],
-            row['high'] / row['close'],
-            row['low'] / row['close'],
-            row['close'] / self.df.iloc[self.current_step-1]['close'],
-            row['volume'] / self.df['volume'].mean(),
-            1.0 # Bias
-        ], dtype=np.float32)
-        return obs
+        prev_row = self.df.iloc[self.current_step-1]
+        return np.array([row['open']/prev_row['close'], row['high']/row['open'], 
+                         row['low'] / row['open'], row['close']/row['open'], 1.0], dtype=np.float32)
 
     def step(self, action):
+        p_now = self.df.iloc[self.current_step]['open']
+        p_next = self.df.iloc[self.current_step]['close'] # خروج فرضی در انتهای همان کندل
+        
+        reward = (p_next - p_now) / p_now if action == 1 else 0
         self.current_step += 1
         done = self.current_step >= len(self.df) - 1
-        
-        current_price = self.df.iloc[self.current_step]['close']
-        prev_price = self.df.iloc[self.current_step-1]['close']
-        
-        # محاسبه پاداش (Reward)
-        change = (current_price - prev_price) / prev_price
-        if action == 1: # Buy
-            reward = change
-        elif action == 2: # Sell
-            reward = -change
-        else: # Hold
-            reward = -0.0001 # جریمه خیلی کم برای جلوگیری از تنبلی مدل
-            
         return self._get_obs(), reward, done, False, {}
 
 # ======================
-# 3. RUNNING THE SYSTEM
+# 3. اجرای پنل کاربری و محاسبات
 # ======================
-df = get_historical_data(total_candles=2000)
+df = get_data_2000()
+
+# Sidebar
+st.sidebar.header("تنظیمات سرمایه")
+initial_capital = st.sidebar.number_input("سرمایه اولیه ($)", value=1000.0)
+fee_rate = 0.001 # 0.1% کارمزد
 
 if not df.empty:
-    st.write(f"✅ تعداد **{len(df)}** کندل با موفقیت بارگذاری شد.")
-    
-    # سایدبار تنظیمات آموزش
-    st.sidebar.header("RL Training Settings")
-    train_steps = st.sidebar.slider("Training Steps", 1000, 10000, 5000)
-    
-    if st.sidebar.button("🚀 شروع آموزش مدل"):
+    with st.spinner('در حال آموزش هوش مصنوعی روی ۲۰۰۰ کندل...'):
         env = TradingEnv(df)
-        model = PPO("MlpPolicy", env, verbose=0, learning_rate=0.0003)
-        
-        with st.spinner(f'در حال پردازش {len(df)} کندل و یادگیری...'):
-            model.learn(total_timesteps=train_steps)
-            st.success("مدل با ۲۰۰۰ کندل آموزش دید!")
+        model = PPO("MlpPolicy", env, verbose=0).learn(total_timesteps=5000)
 
-        # تست مدل روی داده‌ها
-        obs, _ = env.reset()
-        actions = []
-        for i in range(len(df) - 11):
-            action, _ = model.predict(obs)
-            actions.append(["HOLD", "BUY", "SELL"][action])
-            obs, _, _, _, _ = env.step(action)
+    # تست و استخراج نتایج
+    obs, _ = env.reset()
+    history = []
+    current_balance = initial_capital
 
-        # نمایش نتایج نهایی
-        res_df = df.iloc[10:10+len(actions)].copy()
-        res_df['AI_Decision'] = actions
+    for i in range(len(df)-1):
+        action, _ = model.predict(obs)
+        price_open = df.iloc[i]['open']
+        price_close = df.iloc[i]['close']
         
-        st.subheader("📈 نتایج تحلیل ۲۰۰۰ کندل اخیر")
-        st.dataframe(res_df[['time', 'close', 'AI_Decision']].sort_index(ascending=False), use_container_width=True)
-else:
-    st.warning("داده‌ای دریافت نشد. اتصال اینترنت یا فیلترشکن را چک کنید.")
+        signal = "WAIT"
+        pnl_pct = 0.0
+        
+        if action == 1: # مدل سیگنال خرید داده
+            signal = "🟢 BUY"
+            raw_return = (price_close - price_open) / price_open
+            net_return = raw_return - (fee_rate * 2) # خرید و فروش
+            pnl_pct = net_return * 100
+            current_balance *= (1 + net_return)
+        
+        history.append({
+            "Time": df.iloc[i]['time'],
+            "Price": f"${price_open:,.2f}",
+            "Signal": signal,
+            "PnL %": pnl_pct,
+            "Balance": current_balance
+        })
+        obs, _, done, _, _ = env.step(action)
+        if done: break
+
+    # تبدیل به دیتای نهایی
+    report_df = pd.DataFrame(history)
+
+    # نمایش متریک‌های اصلی
+    total_profit = current_balance - initial_capital
+    profit_pct = (total_profit / initial_capital) * 100
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("موجودی نهایی", f"${current_balance:,.2f}")
+    c2.metric("سود کل", f"${total_profit:,.2f}", f"{profit_pct:.2f}%")
+    c3.metric("تعداد کندل بررسی شده", len(df))
+
+    st.divider()
+
+    # نمایش جدول با استایل
+    st.subheader("📋 گزارش دقیق سیگنال‌ها و موجودی (۲۰۰۰ کندل)")
+    st.dataframe(
+        report_df.sort_values("Time", ascending=False),
+        use_container_width=True,
+        column_config={
+            "PnL %": st.column_config.NumberColumn("سود معامله", format="%.2f%%"),
+            "Balance": st.column_config.NumberColumn("موجودی لحظه‌ای", format="$%.2f"),
+            "Time": "زمان کندل"
+        }
+    )
