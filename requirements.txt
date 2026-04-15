@@ -3,6 +3,6 @@ pandas
 numpy
 requests
 pandas-ta
-stable-baselines3
+stable-baselines3==2.3.0
 gymnasium
-torch
+torch==2.2.2
