@@ -1,17 +1,22 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import random
+from datetime import datetime, timedelta, date
+
+# تنظیمات صفحه
+st.set_page_config(layout="wide", page_title="Professional Trading Dashboard")
+st.title(" MOHAMMAD PATTERN")
 
 # ======================
-# DATA (safe + fast)
+# DATA FETCHING
 # ======================
-def load_data():
+@st.cache_data(ttl=60) # کش کردن داده‌ها برای سرعت بیشتر
+def get_live_data():
     try:
         url = "https://data-api.binance.vision/api/v3/klines"
-        params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 300}
-        r = requests.get(url, params=params, timeout=5)
-        data = r.json()
+        params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 500}
+        data = requests.get(url, params=params).json()
 
         df = pd.DataFrame(data, columns=[
             "time","open","high","low","close","volume",
@@ -22,143 +27,163 @@ def load_data():
         df = df[["time","open","high","low","close"]]
         df.columns = ["Time","Open","High","Low","Close"]
         df.set_index("Time", inplace=True)
-
         return df.astype(float)
-
-    except:
-        # fallback
-        n = 300
-        dates = pd.date_range(end=pd.Timestamp.now(), periods=n, freq="4h")
-        price = np.cumsum(np.random.randn(n)) + 30000
-
-        df = pd.DataFrame({
-            "Time": dates,
-            "Open": price,
-            "High": price + np.random.rand(n)*30,
-            "Low": price - np.random.rand(n)*30,
-            "Close": price + np.random.randn(n)
-        }).set_index("Time")
-
-        return df
-
-df = load_data()
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        return pd.DataFrame()
 
 # ======================
-# RL SETUP (Profit Focus)
+# TIME CALCULATION
 # ======================
-actions = ["WAIT","BUY"]
-Q = {}
-
-def get_state(p1, p2):
-    move = (p1["Close"] - p2["Close"]) / p2["Close"]
-
-    body = abs(p1["Close"] - p1["Open"])
-    rng = p1["High"] - p1["Low"]
-    strength = body / rng if rng != 0 else 0
-
-    volatility = rng / p1["Close"]
-
-    return (
-        round(move,3),
-        round(strength,2),
-        round(volatility,3)
-    )
-
-def choose_action(state, eps=0.05):
-    # کمتر explore → تمرکز روی سود
-    if random.random() < eps:
-        return random.choice(actions)
-    return max(actions, key=lambda a: Q.get((state,a), 0))
-
-def update_q(s,a,r):
-    old = Q.get((s,a), 0)
-    Q[(s,a)] = old + 0.2 * (r - old)   # learning rate بالاتر
+def get_time_remaining():
+    now = datetime.utcnow()
+    next_4h = (now.hour // 4 + 1) * 4
+    
+    if next_4h >= 24:
+        target = datetime(now.year, now.month, now.day) + timedelta(days=1)
+    else:
+        target = datetime(now.year, now.month, now.day, next_4h)
+    
+    remaining = target - now
+    return str(remaining).split(".")[0]
 
 # ======================
-# TRAIN (Profit Weighted)
+# SIDEBAR (Control Panel)
 # ======================
-for i in range(2, len(df)-1):
-    p1 = df.iloc[i-1]
-    p2 = df.iloc[i-2]
-    nxt = df.iloc[i]
+st.sidebar.header("Settings")
+initial_capital = st.sidebar.number_input("Capital ($)", value=1000.0, step=100.0)
+fee_rate = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
 
-    state = get_state(p1, p2)
-    action = choose_action(state)
-
-    # شرط پایه استراتژی (همون ایده خودت)
-    move = (p1["Close"] - p2["Close"]) / p2["Close"]
-
-    if action == "WAIT" or move < 0.004:
-        continue
-
-    entry = p1["High"]      # breakout
-    sl = p1["Low"]
-    tp = entry + (entry - sl) * 2   # RR = 2 (سودمحور)
-
-    reward = 0
-
-    if nxt["High"] >= entry:
-        if nxt["Low"] <= sl:
-            reward = -0.02     # ضرر سنگین‌تر
-        elif nxt["High"] >= tp:
-            reward = 0.04      # سود بزرگ‌تر
-
-    # penalize overtrading
-    if reward == 0:
-        reward = -0.002
-
-    update_q(state, action, reward)
+# تنظیم تاریخ پیش‌فرض روی یک هفته قبل
+default_start = date.today() - timedelta(days=7)
+start_date = st.sidebar.date_input("Start Date", value=default_start)
 
 # ======================
-# BACKTEST
+# CORE LOGIC
 # ======================
-balance = 1
-trades = 0
+df_raw = get_live_data()
 
-for i in range(2, len(df)-1):
-    p1 = df.iloc[i-1]
-    p2 = df.iloc[i-2]
-    nxt = df.iloc[i]
+if not df_raw.empty:
+    # فیلتر کردن بر اساس تاریخ انتخاب شده
+    df = df_raw[df_raw.index.date >= start_date].copy()
+    
+    if len(df) < 3:
+        st.warning("داده‌های کافی در این بازه زمانی یافت نشد. بازه را طولانی‌تر کنید.")
+    else:
+        # وضعیت کندل آخر
+        df["Status"] = "CLOSED"
+        df.iloc[-1, df.columns.get_loc("Status")] = "LIVE"
 
-    state = get_state(p1, p2)
-    action = max(actions, key=lambda a: Q.get((state,a),0))
+        # تشخیص نوع کندل
+        df["Candle"] = np.where(df["Close"] > df["Open"], "🟢 Bullish", "🔴 Bearish")
+        df["O→C"] = df["Open"].astype(str) + " → " + df["Close"].astype(str)
 
-    move = (p1["Close"] - p2["Close"]) / p2["Close"]
+        # ستون‌های استراتژی
+        df["Signal"] = "WAIT"
+        df["Entry"] = np.nan
+        df["Target"] = np.nan
+        df["StopLoss"] = np.nan
+        df["Confidence"] = 0.0
+        df["PnL_Percent"] = 0.0
 
-    if action == "WAIT" or move < 0.004:
-        continue
+        balance = 1.0
+        trades = 0
 
-    entry = p1["High"]
-    sl = p1["Low"]
-    tp = entry + (entry - sl) * 2
+        # بک‌تست استراتژی
+        for i in range(2, len(df)):
+            p1 = df.iloc[i-1]
+            p2 = df.iloc[i-2]
 
-    if nxt["High"] >= entry:
-        trades += 1
+            # محاسبه مومنتوم
+            move = (p1["Close"] - p2["Close"]) / p2["Close"]
 
-        if nxt["Low"] <= sl:
-            balance *= 0.98
-        elif nxt["High"] >= tp:
-            balance *= 1.04
+            if move < 0.004: # شرط ورود
+                continue
+
+            entry = df["Open"].iloc[i]
+            sl = p1["Low"]
+            tp = entry + (move * entry * 1.5)
+
+            high = df["High"].iloc[i]
+            low = df["Low"].iloc[i]
+            exit_price = df["Close"].iloc[i]
+
+            # منطق خروج (SL یا TP)
+            if low <= sl:
+                exit_price = sl
+            elif high >= tp:
+                exit_price = tp
+
+            raw_return = (exit_price - entry) / entry
+            net_return = (1 + raw_return) * (1 - fee_rate)**2 - 1
+
+            if net_return <= 0 and exit_price != sl: # فیلتر کردن معاملات خنثی
+                continue
+
+            trades += 1
+            balance *= (1 + net_return)
+
+            # ثبت در جدول
+            idx = df.index[i]
+            df.at[idx, "Signal"] = "BUY"
+            df.at[idx, "Entry"] = entry
+            df.at[idx, "Target"] = tp
+            df.at[idx, "StopLoss"] = sl
+            df.at[idx, "PnL_Percent"] = net_return * 100
+            df.at[idx, "Confidence"] = min(0.95, 0.6 + move*10)
+
+        # ======================
+        # UI - HEADER METRICS
+        # ======================
+        price = df["Close"].iloc[-1]
+        final_balance = initial_capital * balance
+        profit_pct = (balance - 1) * 100
+
+        c1, c2 = st.columns([2, 1])
+        c1.metric("BTC Price", f"${price:,.2f}")
+        c2.metric("Next Candle In", get_time_remaining())
+
+        st.divider()
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Current Balance", f"${final_balance:,.2f}")
+        m2.metric("Total Profit", f"${final_balance-initial_capital:,.2f}", f"{profit_pct:.2f}%")
+        m3.metric("Total Trades", trades)
+        m4.metric("Avg. Profit/Trade", f"{((balance**(1/max(trades,1)))-1)*100:.2f}%" if trades > 0 else "0%")
+
+        st.divider()
+
+        # ======================
+        # UI - DATA TABLE
+        # ======================
+        st.subheader("📊 Trading Logs & Strategy Signals")
+        
+        # مرتب‌سازی برای نمایش (جدیدترین در بالا)
+        view_df = df.sort_index(ascending=False).copy()
+        
+        st.dataframe(
+            view_df,
+            use_container_width=True,
+            height=500,
+            column_config={
+                "O→C": "Price Range",
+                "Candle": "Type",
+                "High": st.column_config.NumberColumn("High", format="$%.1f"),
+                "Low": st.column_config.NumberColumn("Low", format="$%.1f"),
+                "Open": st.column_config.NumberColumn("Open", format="$%.1f"),
+                "Close": st.column_config.NumberColumn("Close", format="$%.1f"),
+                "Entry": st.column_config.NumberColumn("Entry", format="$%.1f"),
+                "Target": st.column_config.NumberColumn("TP", format="$%.1f"),
+                "StopLoss": st.column_config.NumberColumn("SL", format="$%.1f"),
+                "PnL_Percent": st.column_config.NumberColumn("PnL %", format="%.2f%%"),
+                "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1),
+            }
+        )
 
 # ======================
-# LIVE SIGNAL
+# AUTO REFRESH (Every 30s)
 # ======================
-p1 = df.iloc[-2]
-p2 = df.iloc[-3]
-
-state = get_state(p1, p2)
-action = max(actions, key=lambda a: Q.get((state,a),0))
-
-move = (p1["Close"] - p2["Close"]) / p2["Close"]
-
-if action == "BUY" and move >= 0.004:
-    signal = "BUY"
-else:
-    signal = "WAIT"
-
-# ======================
-# OUTPUT
-# ======================
-print("BALANCE:", round(balance,3))
-print("TRADES:", trades)
-print("LIVE SIGNAL:", signal)
+st.markdown(
+    "<script>setTimeout(()=>window.location.reload(),30000)</script>",
+    unsafe_allow_html=True
+)
