@@ -1,8 +1,8 @@
-streamlit
-pandas
-numpy
-requests
-gymnasium
-stable-baselines3
-shimmy
-pandas_ta
+streamlit==1.32.0
+pandas==2.2.0
+numpy==1.26.4
+requests==2.31.0
+gymnasium==0.29.1
+stable-baselines3==2.2.1
+shimmy==0.3.0
+pandas_ta==0.3.14b0
