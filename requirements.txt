@@ -2,7 +2,6 @@ streamlit
 pandas
 numpy<2.0
 requests
-gymnasium
 stable-baselines3
+gymnasium
 shimmy
-pandas_ta==0.3.14b0
