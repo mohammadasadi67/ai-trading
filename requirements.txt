@@ -1,7 +1,8 @@
-streamlit==1.32.0
-pandas==2.2.1
-numpy==1.26.4
-requests==2.31.0
-gymnasium==0.29.1
-stable-baselines3==2.2.1
-shimmy==0.3.0
+import streamlit as st
+import pandas as pd
+import numpy as np
+import requests
+import pandas_ta as ta # برای اندیکاتورهای فنی
+from stable_baselines3 import PPO
+import gymnasium as gym
+from gymnasium import spaces
