@@ -1,8 +1,7 @@
-streamlit
-yfinance
 pandas
 numpy
-streamlit-autorefresh
+requests
+pandas_ta
 stable-baselines3
 gymnasium
-websocket-client
+shimmy
