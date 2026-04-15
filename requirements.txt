@@ -1,7 +1,8 @@
+streamlit
 pandas
 numpy
 requests
-pandas_ta
-stable-baselines3
 gymnasium
+stable-baselines3
 shimmy
+pandas_ta
