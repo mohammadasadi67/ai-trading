@@ -11,11 +11,11 @@ from stable_baselines3 import PPO
 import gymnasium as gym
 from gymnasium import spaces
 
-st.set_page_config(layout="wide", page_title="AI Price Action Trader")
-st.title("🚀 AI TRADER PRO (FEE & DATE FILTER)")
+st.set_page_config(layout="wide", page_title="AI Aggressive Trader")
+st.title("🚀 AI TRADER PRO: AGGRESSIVE PRICE ACTION")
 
 # ======================
-# 1. دریافت داده‌ها
+# 1. دریافت داده‌های ۳ ساله
 # ======================
 @st.cache_data(ttl=3600)
 def get_historical_data(symbol="BTCUSDT", interval="4h", years=3):
@@ -24,7 +24,7 @@ def get_historical_data(symbol="BTCUSDT", interval="4h", years=3):
     all_candles = []
     last_time = None
     
-    with st.spinner("در حال دریافت دیتای زنده..."):
+    with st.spinner("در حال به‌روزرسانی دیتای ۳ ساله..."):
         while len(all_candles) < total_needed:
             params = {"symbol": symbol, "interval": interval, "limit": 1000}
             if last_time: params["endTime"] = last_time - 1
@@ -41,7 +41,7 @@ def get_historical_data(symbol="BTCUSDT", interval="4h", years=3):
     df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
     df['date'] = pd.to_datetime(df['time'], unit='ms')
     
-    # ویژگی‌های پرایس اکشن
+    # ویژگی‌های پرایس اکشن برای یادگیری بهتر
     df['body_size'] = (df['close'] - df['open']) / df['open']
     df['upper_wick'] = (df['high'] - np.maximum(df['close'], df['open'])) / df['open']
     df['lower_wick'] = (np.minimum(df['close'], df['open']) - df['low']) / df['open']
@@ -50,10 +50,10 @@ def get_historical_data(symbol="BTCUSDT", interval="4h", years=3):
     return df.dropna().reset_index(drop=True)
 
 # ======================
-# 2. محیط معاملاتی هوشمند
+# 2. محیط معاملاتی تهاجمی
 # ======================
-class SmartTradingEnv(gym.Env):
-    def __init__(self, df, initial_balance=1000, stop_loss=0.03, fee=0.001):
+class AggressiveEnv(gym.Env):
+    def __init__(self, df, initial_balance=1000, stop_loss=0.05, fee=0.001):
         super().__init__()
         self.df = df
         self.initial_balance = initial_balance
@@ -80,7 +80,6 @@ class SmartTradingEnv(gym.Env):
         ], dtype=np.float32)
 
     def step(self, action):
-        # جلوگیری از خروج از محدوده Index
         if self.step_i >= len(self.df) - 2:
             return self._get_obs(), 0, True, False, {}
 
@@ -90,62 +89,65 @@ class SmartTradingEnv(gym.Env):
         reward = 0
 
         if action == 1: # BUY/HOLD
-            if self.position == 0:
+            if self.position == 0: # خرید جدید
                 self.position = 1
                 self.entry_price = row['close']
                 self.balance *= (1 - self.fee)
+                reward = 0.2 # پاداش برای جرات معامله کردن
             
             pnl = (next_row['close'] / self.entry_price) - 1
-            if pnl <= -self.sl_pct:
-                reward = -20
+            if pnl <= -self.sl_pct: # خوردن استاپ لاس
+                reward = -50 
                 self.balance *= (1 - self.sl_pct)
                 self.position = 0
                 self.entry_price = 0
-                done = True # توقف در صورت کال مارجین مجازی
             else:
-                reward = price_diff * 15
+                reward = price_diff * 150 # پاداش خیلی زیاد برای سود
                 self.balance *= (1 + price_diff)
         
         else: # WAIT/SELL
-            if self.position == 1:
+            if self.position == 1: # فروش
                 self.balance *= (1 - self.fee)
                 pnl = (row['close'] - self.entry_price) / self.entry_price
-                reward = (pnl - self.fee) * 25
+                reward = (pnl - self.fee) * 200 # پاداش عالی برای نقد کردن سود
                 self.position = 0
                 self.entry_price = 0
             else:
-                reward = 0.01 # پاداش ناچیز برای حفظ سرمایه
+                # جریمه سنگین برای تماشاچی بودن در بازار صعودی!
+                if price_diff > 0.008:
+                    reward = -10
+                else:
+                    reward = 0.05 # پاداش ناچیز برای حفظ پول در بازار رنج
 
         self.step_i += 1
         done = self.step_i >= len(self.df) - 2
         return self._get_obs(), reward, done, False, {}
 
 # ======================
-# 3. اجرای اصلی
+# 3. داشبورد اصلی
 # ======================
 df = get_historical_data(years=3)
 
 # Sidebar
-st.sidebar.header("📊 تنظیمات صرافی")
+st.sidebar.header("💰 مدیریت سرمایه و صرافی")
 init_cash = st.sidebar.number_input("سرمایه اولیه ($)", value=1000)
-exchange_fee = st.sidebar.slider("کارمزد صرافی (%)", 0.0, 0.5, 0.1) / 100
-sl_val = st.sidebar.slider("Stop Loss (%)", 1, 10, 4) / 100
+fee_pct = st.sidebar.slider("کارمزد صرافی (%)", 0.0, 0.5, 0.1) / 100
+sl_val = st.sidebar.slider("حد ضرر Stop Loss (%)", 1, 10, 5) / 100
 
-st.sidebar.header("📅 فیلتر زمان")
-min_d, max_d = df['date'].min().to_pydatetime(), df['date'].max().to_pydatetime()
-date_range = st.sidebar.date_input("بازه نمایش معاملات", [min_d, max_d])
+st.sidebar.header("🗓 فیلتر تاریخ")
+date_range = st.sidebar.date_input("بازه نمایش معاملات", [df['date'].min(), df['date'].max()])
 
-env = SmartTradingEnv(df, initial_balance=init_cash, stop_loss=sl_val, fee=exchange_fee)
-MODEL_NAME = "final_trader_model"
+env = AggressiveEnv(df, initial_balance=init_cash, stop_loss=sl_val, fee=fee_pct)
+MODEL_NAME = "aggressive_pa_model"
 
 col1, col2 = st.columns(2)
 with col1:
-    if st.button("🚀 شروع آموزش"):
-        with st.spinner("مدل در حال یادگیری..."):
-            model = PPO("MlpPolicy", env, verbose=0)
-            model.learn(total_timesteps=100000)
+    if st.button("🚀 شروع آموزش مدل تهاجمی"):
+        with st.spinner("هوش مصنوعی در حال یادگیری ترید تهاجمی..."):
+            model = PPO("MlpPolicy", env, verbose=0, learning_rate=0.0003)
+            model.learn(total_timesteps=150000) # گام‌های بیشتر برای یادگیری بهتر
             model.save(MODEL_NAME)
-        st.success("آموزش تمام شد!")
+        st.success("آموزش تمام شد! ✅")
         st.rerun()
 
 if os.path.exists(f"{MODEL_NAME}.zip"):
@@ -154,7 +156,7 @@ if os.path.exists(f"{MODEL_NAME}.zip"):
     trade_log = []
     current_trade = None
 
-    # شبیه‌سازی با رعایت مرز Index
+    # شبیه‌سازی تاریخچه
     for i in range(len(df) - 2):
         action, _ = model.predict(obs, deterministic=True)
         row = df.iloc[i]
@@ -163,16 +165,15 @@ if os.path.exists(f"{MODEL_NAME}.zip"):
             current_trade = {"Date": row['date'], "Price": row['close']}
         elif current_trade is not None:
             next_row = df.iloc[i+1]
-            # خروج بر اساس مدل یا استاپ لاس
             if action == 0 or (next_row['close'] <= current_trade['Price'] * (1 - sl_val)):
                 exit_p = next_row['close']
-                pnl = (((exit_p - current_trade['Price']) / current_trade['Price']) - (2 * exchange_fee))
+                net_pnl_pct = (((exit_p - current_trade['Price']) / current_trade['Price']) - (2 * fee_pct))
                 trade_log.append({
                     "تاریخ ورود": current_trade['Date'],
                     "قیمت ورود": round(current_trade['Price'], 2),
                     "قیمت خروج": round(exit_p, 2),
-                    "سود خالص (%)": round(pnl * 100, 2),
-                    "سود خالص ($)": round(pnl * init_cash, 2)
+                    "سود خالص (%)": round(net_pnl_pct * 100, 2),
+                    "سود خالص ($)": round(net_pnl_pct * init_cash, 2)
                 })
                 current_trade = None
         
@@ -181,24 +182,26 @@ if os.path.exists(f"{MODEL_NAME}.zip"):
 
     t_df = pd.DataFrame(trade_log)
     if not t_df.empty:
+        # اعمال فیلتر تاریخ
         if len(date_range) == 2:
             t_df = t_df[(t_df['تاریخ ورود'].dt.date >= date_range[0]) & (t_df['تاریخ ورود'].dt.date <= date_range[1])]
 
         st.divider()
-        c1, c2, c3 = st.columns(3)
+        st.subheader("📊 عملکرد نهایی مدل")
         total_p = t_df['سود خالص ($)'].sum()
-        c1.metric("سرمایه نهایی", f"${init_cash + total_p:.2f}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("سرمایه فعلی", f"${init_cash + total_p:.2f}")
         c2.metric("سود/ضرر کل", f"${total_p:.2f}", f"{ (total_p/init_cash)*100:.2f}%")
-        c3.metric("تعداد ترید", len(t_df))
+        c3.metric("تعداد کل معاملات", len(t_df))
 
         st.dataframe(t_df.sort_values(by="تاریخ ورود", ascending=False), use_container_width=True)
     else:
-        st.info("تریدی یافت نشد. مدل را آموزش دهید.")
+        st.warning("⚠️ مدل هنوز تریدی انجام نداده است. دوباره Train کنید یا حد ضرر را بیشتر کنید.")
     
     # سیگنال لحظه‌ای
     st.divider()
     last_action, _ = model.predict(obs, deterministic=True)
     if last_action == 1:
-        st.success(f"🎯 سیگنال: **BUY / HOLD** | قیمت: {df.iloc[-1]['close']}")
+        st.success(f"🎯 سیگنال نهایی: **BUY / HOLD** | قیمت: {df.iloc[-1]['close']}")
     else:
-        st.warning("🎯 سیگنال: **WAIT / SELL**")
+        st.warning("🎯 سیگنال نهایی: **WAIT / SELL**")
