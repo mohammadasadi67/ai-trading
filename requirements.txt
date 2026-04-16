@@ -2,7 +2,6 @@ streamlit
 pandas
 numpy
 requests
-pandas-ta
-stable-baselines3==2.3.0
+stable-baselines3
 gymnasium
-torch==2.2.2
+shimmy
