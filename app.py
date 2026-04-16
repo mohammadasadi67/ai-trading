@@ -11,77 +11,83 @@ from stable_baselines3 import PPO
 import gymnasium as gym
 from gymnasium import spaces
 
-# تنظیمات صفحه
-st.set_page_config(layout="wide", page_title="AI Crypto Trader Pro")
-st.title("🚀 AI TRADER PRO: SL/TP, HOLD & PNL TRACKER")
+st.set_page_config(layout="wide", page_title="AI Price Action Trader")
+st.title("🚀 AI TRADER PRO: PRICE ACTION LOGIC")
 
 # ======================
-# 1. دریافت داده‌های ۳ ساله (Batch Fetching)
+# 1. دریافت داده‌ها
 # ======================
 @st.cache_data(ttl=3600)
 def get_historical_data(symbol="BTCUSDT", interval="4h", years=3):
     url = "https://data-api.binance.vision/api/v3/klines"
-    total_needed = years * 365 * 6 # تعداد تقریبی کندل‌های 4 ساعته
+    total_needed = years * 365 * 6 
     all_candles = []
     last_time = None
     
-    with st.spinner(f"در حال دریافت داده‌های {years} سال اخیر از بایننس..."):
+    with st.spinner(f"در حال دریافت داده‌های {years} سال اخیر..."):
         while len(all_candles) < total_needed:
             params = {"symbol": symbol, "interval": interval, "limit": 1000}
             if last_time: params["endTime"] = last_time - 1
-            
             try:
                 res = requests.get(url, params=params).json()
                 if not res or len(res) == 0: break
                 all_candles = res + all_candles
                 last_time = res[0][0]
                 if len(all_candles) >= total_needed: break
-                time.sleep(0.1)
+                time.sleep(0.05)
             except: break
 
     df = pd.DataFrame(all_candles, columns=["time", "open", "high", "low", "close", "volume", "ct", "qav", "trades", "tb", "tq", "ig"])
-    df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
+    df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
     
-    # محاسبه اندیکاتورها
-    df['EMA'] = df['close'].ewm(span=20).mean()
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+    # --- ویژگی‌های پرایس اکشن (Price Action Features) ---
+    df['body_size'] = (df['close'] - df['open']) / df['open']
+    df['upper_wick'] = (df['high'] - np.maximum(df['close'], df['open'])) / df['open']
+    df['lower_wick'] = (np.minimum(df['close'], df['open']) - df['low']) / df['open']
+    df['rel_volume'] = df['volume'] / df['volume'].rolling(20).mean()
+    df['returns'] = df['close'].pct_change()
+    
     return df.dropna().reset_index(drop=True)
 
 # ======================
-# 2. محیط معاملاتی (Environment)
+# 2. محیط معاملاتی پرایس اکشن
 # ======================
-class AdvancedTradingEnv(gym.Env):
-    def __init__(self, df, initial_balance=1000, stop_loss=0.02):
+class PriceActionEnv(gym.Env):
+    def __init__(self, df, initial_balance=1000, stop_loss=0.03):
         super().__init__()
         self.df = df
         self.initial_balance = initial_balance
         self.stop_loss_pct = stop_loss
-        self.action_space = spaces.Discrete(2) # 0: WAIT/SELL, 1: BUY/HOLD
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32)
+        
+        # 0: WAIT/SELL, 1: BUY/HOLD
+        self.action_space = spaces.Discrete(2)
+        # ویژگی‌ها: بدنه، سقف، کف، حجم، وضعیت پوزیشن، سود شناور
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32)
         self.reset()
 
     def reset(self, seed=None, options=None):
         self.balance = self.initial_balance
         self.position = 0 
         self.entry_price = 0
-        self.step_i = 0
+        self.step_i = 10 # شروع از جایی که داده‌های قبلی موجود باشد
         return self._get_obs(), {}
 
     def _get_obs(self):
         row = self.df.iloc[self.step_i]
+        floating_pnl = (row['close'] / self.entry_price) - 1 if self.entry_price > 0 else 0
         return np.array([
-            row['RSI'] / 100,
-            row['close'] / row['EMA'] if row['EMA'] != 0 else 1.0,
+            row['body_size'],
+            row['upper_wick'],
+            row['lower_wick'],
+            row['rel_volume'] if not np.isnan(row['rel_volume']) else 1.0,
             float(self.position),
-            (row['close'] / self.entry_price) if self.entry_price > 0 else 1.0
+            floating_pnl
         ], dtype=np.float32)
 
     def step(self, action):
         row = self.df.iloc[self.step_i]
         next_row = self.df.iloc[self.step_i + 1]
+        price_diff = (next_row['close'] - row['close']) / row['close']
         reward = 0
 
         if action == 1: # BUY or HOLD
@@ -89,65 +95,62 @@ class AdvancedTradingEnv(gym.Env):
                 self.position = 1
                 self.entry_price = row['close']
             
-            # بررسی استاپ لاس
-            if (next_row['close'] / self.entry_price) - 1 <= -self.stop_loss_pct:
-                reward = -2 # جریمه سنگین
+            # چک کردن استاپ لاس
+            current_pnl = (next_row['close'] / self.entry_price) - 1
+            if current_pnl <= -self.stop_loss_pct:
+                reward = -5 # جریمه سنگین برای ضرر
                 self.balance *= (1 - self.stop_loss_pct)
                 self.position = 0
                 self.entry_price = 0
             else:
-                reward = (next_row['close'] - row['close']) / row['close']
-                self.balance *= (1 + reward)
+                reward = price_diff * 10 # تشویق برای گرفتن سود
+                self.balance *= (1 + price_diff)
         
-        elif action == 0 and self.position == 1: # SELL
-            reward = (row['close'] - self.entry_price) / self.entry_price
-            self.position = 0
-            self.entry_price = 0
+        else: # action == 0 (WAIT/SELL)
+            if self.position == 1:
+                pnl = (row['close'] - self.entry_price) / self.entry_price
+                reward = pnl * 10
+                self.position = 0
+                self.entry_price = 0
+            else:
+                # اگر بازار صعودی بود و مدل بیرون ماند، جریمه شود (ضد ترس)
+                if price_diff > 0.01:
+                    reward = -1
 
         self.step_i += 1
         done = self.step_i >= len(self.df) - 2
         return self._get_obs(), reward, done, False, {}
 
 # ======================
-# 3. داشبورد و اجرای اصلی
+# 3. اجرای اصلی
 # ======================
 df = get_historical_data(years=3)
 
-# Sidebar Settings
-st.sidebar.header("⚙️ Trading Strategy")
+st.sidebar.header("⚙️ Strategy")
 init_cash = st.sidebar.number_input("Initial Balance ($)", value=1000)
-sl_pct = st.sidebar.slider("Stop Loss (%)", 1, 10, 2) / 100
-train_steps = st.sidebar.select_slider("Training Intensity", options=[10000, 50000, 100000], value=50000)
+sl_pct = st.sidebar.slider("Stop Loss (%)", 1, 10, 3) / 100
+train_steps = st.sidebar.select_slider("Train Intensity", options=[50000, 100000, 200000], value=100000)
 
-env = AdvancedTradingEnv(df, initial_balance=init_cash, stop_loss=sl_pct)
-MODEL_NAME = "trading_model_pro"
+env = PriceActionEnv(df, initial_balance=init_cash, stop_loss=sl_pct)
+MODEL_NAME = "pa_trading_model"
 
-# کانتینر دکمه‌ها
 col_btn1, col_btn2 = st.columns(2)
 with col_btn1:
-    if st.button("🚀 Train New Model"):
-        with st.spinner("مدل در حال یادگیری الگوهای ۳ سال اخیر است..."):
-            model = PPO("MlpPolicy", env, verbose=0)
+    if st.button("🚀 Train Price Action Model"):
+        with st.spinner("مدل در حال یادگیری ساختار کندل‌ها..."):
+            model = PPO("MlpPolicy", env, verbose=0, learning_rate=0.0003)
             model.learn(total_timesteps=train_steps)
             model.save(MODEL_NAME)
-        st.success("آموزش کامل شد! ✅")
+        st.success("یادگیری کامل شد! ✅")
         st.rerun()
 
-with col_btn2:
-    if st.button("🗑 Reset Data"):
-        if os.path.exists(f"{MODEL_NAME}.zip"): os.remove(f"{MODEL_NAME}.zip")
-        st.cache_data.clear()
-        st.rerun()
-
-# --- بخش نتایج (فقط اگر مدل وجود داشته باشد) ---
 if os.path.exists(f"{MODEL_NAME}.zip"):
     model = PPO.load(MODEL_NAME)
-    
-    # اجرای بک‌تست برای استخراج تاریخچه
     obs, _ = env.reset()
     trade_log = []
     current_trade = None
 
+    # شبیه‌سازی برای استخراج تاریخچه
     for i in range(len(df) - 1):
         action, _ = model.predict(obs, deterministic=True)
         row = df.iloc[i]
@@ -169,7 +172,6 @@ if os.path.exists(f"{MODEL_NAME}.zip"):
 
     trades_df = pd.DataFrame(trade_log)
 
-    # نمایش آمار کلی
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Current Price", f"${df.iloc[-1]['close']:,}")
@@ -177,29 +179,15 @@ if os.path.exists(f"{MODEL_NAME}.zip"):
     if not trades_df.empty:
         win_rate = (len(trades_df[trades_df['PnL (%)'] > 0]) / len(trades_df)) * 100
         m3.metric("Win Rate", f"{win_rate:.1f}%")
-        m4.metric("Net PnL (%)", f"{trades_df['PnL (%)'].sum():.2f}%")
+        m4.metric("Total PnL (%)", f"{trades_df['PnL (%)'].sum():.2f}%")
+        st.dataframe(trades_df.tail(50), use_container_width=True)
+    else:
+        st.warning("⚠️ مدل هنوز جرات ترید پیدا نکرده. دوباره دکمه Train را بزنید یا شدت (Intensity) را زیاد کنید.")
 
-    # فیلتر و جدول معاملات
-    st.subheader("📜 Trade History & PnL Log")
-    filter_choice = st.radio("Filter History:", ["All", "Profits", "Losses"], horizontal=True)
-    
-    display_df = trades_df
-    if filter_choice == "Profits": display_df = trades_df[trades_df['PnL (%)'] > 0]
-    elif filter_choice == "Losses": display_df = trades_df[trades_df['PnL (%)'] <= 0]
-
-    st.dataframe(display_df.tail(100), use_container_width=True)
-
-    # سیگنال لحظه‌ای
+    # وضعیت لحظه‌ای
     st.divider()
     last_action, _ = model.predict(obs, deterministic=True)
     if last_action == 1:
-        st.success(f"🎯 CURRENT SIGNAL: **BUY / HOLD** (Entry: {df.iloc[-1]['close']})")
+        st.success(f"🎯 LIVE SIGNAL: **BUY / HOLD**")
     else:
-        st.warning("🎯 CURRENT SIGNAL: **WAIT / SELL**")
-    
-    # تایمر کندل بعدی
-    next_c = datetime.fromtimestamp(df.iloc[-1]['time']/1000) + timedelta(hours=4)
-    st.info(f"⏳ زمان تا کندل ۴ ساعته بعدی: {str(next_c - datetime.now()).split('.')[0]}")
-
-else:
-    st.warning("👈 لطفاً روی دکمه Train کلیک کنید تا هوش مصنوعی شروع به تحلیل ۳ سال اخیر کند.")
+        st.warning("🎯 LIVE SIGNAL: **WAIT / SELL**")
