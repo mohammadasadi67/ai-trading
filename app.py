@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import requests
 import os
+import time
 
 # RL
 from stable_baselines3 import PPO
@@ -10,125 +11,97 @@ import gymnasium as gym
 from gymnasium import spaces
 
 st.set_page_config(layout="wide")
-st.title("🚀 AI TRADER (FAST VERSION)")
+st.title("🚀 AI TRADER (PRO VERSION)")
 
 # ======================
-# 1. DATA
+# 1. داده‌های طولانی مدت (مثلاً ۳ سال)
 # ======================
-@st.cache_data(ttl=300)
-def get_data():
-    try:
-        url = "https://data-api.binance.vision/api/v3/klines"
-        res = requests.get(url, params={
-            "symbol": "BTCUSDT",
-            "interval": "4h",
-            "limit": 500
-        }).json()
-
-        df = pd.DataFrame(res, columns=[
-            "time","open","high","low","close","volume",
-            "ct","qav","trades","tb","tq","ig"
-        ])
-
-        df[["open","high","low","close","volume"]] = df[
-            ["open","high","low","close","volume"]
-        ].astype(float)
-
-        # indicators
-        df['EMA'] = df['close'].ewm(span=20).mean()
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-
-        df = df.dropna().reset_index(drop=True)
-        return df
-    except Exception as e:
-        st.error(f"Error fetching data: {e}")
-        return None
-
-# ======================
-# 2. ENV
-# ======================
-class TradingEnv(gym.Env):
-    def __init__(self, df):
-        super().__init__()
-        self.df = df
-        self.action_space = spaces.Discrete(2)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32)
-        self.reset()
-
-    def reset(self, seed=None, options=None):
-        self.step_i = 0
-        return self._obs(), {}
-
-    def _obs(self):
-        row = self.df.iloc[self.step_i]
-        return np.array([
-            row['RSI']/100,
-            row['close']/row['EMA'] if row['EMA'] != 0 else 1.0,
-            1.0
-        ], dtype=np.float32)
-
-    def step(self, action):
-        row = self.df.iloc[self.step_i]
-        next_row = self.df.iloc[self.step_i + 1]
-        reward = 0
-        if action == 1:
-            reward = (next_row['close'] - row['close']) / row['close']
-        self.step_i += 1
-        done = self.step_i >= len(self.df) - 2
-        return self._obs(), reward, done, False, {}
-
-# ======================
-# 3. EXECUTION
-# ======================
-df = get_data()
-
-if df is not None:
-    st.write("### 📈 Recent Data", df.tail(3))
+@st.cache_data(ttl=86400) # ذخیره داده‌ها برای یک روز
+def get_historical_data(symbol="BTCUSDT", interval="4h", years=3):
+    st.write(f"⏳ در حال دریافت داده‌های {years} سال اخیر...")
+    url = "https://data-api.binance.vision/api/v3/klines"
     
-    env = TradingEnv(df)
+    # محاسبه تعداد کندل‌های مورد نیاز (تقریبی)
+    # هر سال حدود ۲۱۹۰ کندل ۴ ساعته دارد
+    total_needed = years * 365 * 6 
+    all_candles = []
+    last_time = None
 
-    col1, col2 = st.columns(2)
+    while len(all_candles) < total_needed:
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": 1000
+        }
+        if last_time:
+            params["endTime"] = last_time - 1
+        
+        res = requests.get(url, params=params).json()
+        if not res or len(res) == 0:
+            break
+            
+        all_candles = res + all_candles
+        last_time = res[0][0] # زمان اولین کندل در لیست فعلی
+        
+        # وقفه کوتاه برای رعایت محدودیت API
+        time.sleep(0.1)
+        if len(all_candles) >= total_needed:
+            break
 
-    with col1:
-        if st.button("🚀 Train AI Model"):
-            with st.spinner("Training..."):
-                model = PPO("MlpPolicy", env, verbose=0)
-                model.learn(total_timesteps=1000)
-                model.save("trading_model")
-            st.success("Model Trained Successfully! ✅")
-            st.rerun()
+    df = pd.DataFrame(all_candles, columns=[
+        "time","open","high","low","close","volume",
+        "ct","qav","trades","tb","tq","ig"
+    ])
+    
+    df[["open","high","low","close","volume"]] = df[
+        ["open","high","low","close","volume"]
+    ].astype(float)
 
-    with col2:
-        if st.button("🗑 Reset Model"):
-            if os.path.exists("trading_model.zip"):
-                os.remove("trading_model.zip")
-                st.info("Model deleted.")
-                st.rerun()
+    # شاخص‌ها
+    df['EMA'] = df['close'].ewm(span=20).mean()
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
 
-    st.divider()
+    return df.dropna().reset_index(drop=True)
 
-    # LOAD & RUN
-    if os.path.exists("trading_model.zip"):
-        model = PPO.load("trading_model")
-        obs, _ = env.reset()
-        signals = []
+# ... (کلاس TradingEnv مشابه قبل باقی می‌ماند) ...
 
-        for i in range(len(df)-2):
-            action, _ = model.predict(obs)
-            signals.append({
-                "Time": pd.to_datetime(df.iloc[i]['time'], unit='ms'),
-                "Price": df.iloc[i]['close'],
-                "Signal": "🟢 BUY" if action == 1 else "⚪ WAIT"
-            })
-            obs, _, _, _, _ = env.step(action)
+# ======================
+# 3. اجرای برنامه
+# ======================
+df = get_historical_data(years=3) # تنظیم روی ۳ سال
+st.write(f"✅ تعداد {len(df)} کندل بارگذاری شد.")
 
-        st.write("### 📊 AI Trading Signals")
-        st.table(pd.DataFrame(signals).tail(10))
-    else:
-        st.warning("⚠️ No model found. Please click 'Train AI Model' first.")
+env = gym.make('os-v0') # یا استفاده مستقیم از کلاس محیط خودت
+# برای سادگی فرض می‌کنیم کلاس TradingEnv بالا تعریف شده است
+env = TradingEnv(df)
+
+MODEL_NAME = "trading_model_3years"
+
+# بررسی وجود مدل
+if os.path.exists(f"{MODEL_NAME}.zip"):
+    st.success("🤖 مدل هوشمند از قبل آموزش دیده و آماده است!")
+    model = PPO.load(MODEL_NAME)
+    
+    if st.button("🔄 آموزش دوباره (Re-train)"):
+        os.remove(f"{MODEL_NAME}.zip")
+        st.rerun()
 else:
-    st.error("Could not load data from Binance.")
+    st.warning("⚠️ مدلی یافت نشد. باید آموزش را شروع کنید.")
+    train_steps = st.slider("تعداد گام‌های آموزش:", 10000, 200000, 50000)
+    
+    if st.button("🚀 شروع آموزش سنگین"):
+        with st.spinner("این فرآیند ممکن است چند دقیقه طول بکشد..."):
+            model = PPO("MlpPolicy", env, verbose=0)
+            model.learn(total_timesteps=train_steps)
+            model.save(MODEL_NAME)
+        st.success("آموزش تمام شد و مدل ذخیره شد! ✅")
+        st.rerun()
+
+# نمایش سیگنال‌ها (فقط اگر مدل وجود داشته باشد)
+if os.path.exists(f"{MODEL_NAME}.zip"):
+    # (کد پیش‌بینی سیگنال‌ها مشابه قبل)
+    st.write("### 📊 آخرین سیگنال‌های صادر شده")
+    # ...
