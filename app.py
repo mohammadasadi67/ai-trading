@@ -1,194 +1,128 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import requests
-import os
-import time
-from datetime import datetime
-
-# RL Libraries
-from stable_baselines3 import PPO
 import gymnasium as gym
 from gymnasium import spaces
+import numpy as np
 
-st.set_page_config(layout="wide", page_title="AI Hunter 2026")
-st.title("🏹 AI HUNTER: TRAINED ON HISTORY, TESTED ON 2026")
-
-# ======================
-# 1. دریافت داده‌ها (۳ سال کامل)
-# ======================
-@st.cache_data(ttl=3600)
-def get_historical_data(symbol="BTCUSDT", interval="4h", years=3.5):
-    url = "https://data-api.binance.vision/api/v3/klines"
-    total_needed = int(years * 365 * 6)
-    all_candles = []
-    last_time = None
-    
-    with st.spinner("در حال جمع‌آوری تاریخچه قیمتی برای بازنگری مدل..."):
-        while len(all_candles) < total_needed:
-            params = {"symbol": symbol, "interval": interval, "limit": 1000}
-            if last_time: params["endTime"] = last_time - 1
-            try:
-                res = requests.get(url, params=params).json()
-                if not res or len(res) == 0: break
-                all_candles = res + all_candles
-                last_time = res[0][0]
-                time.sleep(0.01)
-            except: break
-
-    df = pd.DataFrame(all_candles, columns=["time", "open", "high", "low", "close", "volume", "ct", "qav", "trades", "tb", "tq", "ig"])
-    df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
-    df['date'] = pd.to_datetime(df['time'], unit='ms')
-    
-    # اندیکاتورها برای درک فراز و نشیب
-    df['EMA_Long'] = df['close'].ewm(span=50).mean()
-    df['body_pct'] = (df['close'] - df['open']) / df['open']
-    df['rel_vol'] = df['volume'] / df['volume'].rolling(20).mean()
-    
-    return df.dropna().reset_index(drop=True)
-
-# ======================
-# 2. محیط معاملاتی با پاداش متعادل
-# ======================
-class BalancedHunterEnv(gym.Env):
-    def __init__(self, df, initial_balance=1000, stop_loss=0.05, fee=0.001):
+class SovereignQuantEnv(gym.Env):
+    def __init__(self, df, initial_balance=1000):
         super().__init__()
         self.df = df
         self.initial_balance = initial_balance
-        self.sl_pct = stop_loss
-        self.fee = fee
-        self.action_space = spaces.Discrete(2)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(5,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-5, high=5, shape=(10,), dtype=np.float32)
+        self.action_space = spaces.Discrete(4) # 0:Stay, 1:Long, 2:Short, 3:Close
         self.reset()
 
     def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
         self.balance = self.initial_balance
+        self.peak_equity = self.initial_balance
         self.position = 0 
         self.entry_price = 0
-        self.step_i = 50 
+        self.position_size = 0
+        self.holding_steps = 0
+        self.step_i = 50
         return self._get_obs(), {}
 
     def _get_obs(self):
         row = self.df.iloc[self.step_i]
-        dist_ema = (row['close'] - row['EMA_Long']) / row['EMA_Long']
-        floating_pnl = (row['close'] / self.entry_price) - 1 if self.entry_price > 0 else 0
-        return np.array([row['body_pct'], dist_ema, row['rel_vol'], float(self.position), floating_pnl], dtype=np.float32)
+        equity = self.get_total_equity(row['close'])
+        pnl = (row['close'] / self.entry_price - 1) * self.position if self.entry_price > 0 else 0
+        
+        obs = np.array([
+            ((row['EMA_20'] - row['EMA_50']) / row['EMA_50']) * 20,
+            (row['close'] / row['EMA_50'] - 1) * 10,
+            row['volatility'] / 0.04,
+            row['rel_vol'] - 1.0,
+            (row['close'] / self.df.iloc[max(self.step_i-5, 0)]['close'] - 1) * 10,
+            (row['RSI'] - 50) / 20,
+            float(self.position),
+            pnl * 5,
+            min(float(self.holding_steps) / 100.0, 1.0),
+            ((self.peak_equity - equity) / self.peak_equity) * 5
+        ], dtype=np.float32)
+        return np.nan_to_num(np.clip(obs, -5, 5))
 
     def step(self, action):
-        if self.step_i >= len(self.df) - 2:
-            return self._get_obs(), 0, True, False, {}
-
         row = self.df.iloc[self.step_i]
         next_row = self.df.iloc[self.step_i + 1]
-        price_diff = (next_row['close'] - row['close']) / row['close']
+        fee = 0.001
         reward = 0
 
-        if action == 1: # BUY/HOLD
-            if self.position == 0:
-                self.position = 1
-                self.entry_price = row['close']
-                self.balance *= (1 - self.fee)
-                reward = -0.5 # جریمه کم برای تشویق به شکار
-            
-            pnl = (next_row['close'] / self.entry_price) - 1
-            if pnl <= -self.sl_pct:
-                reward = -30
-                self.balance *= (1 - self.sl_pct)
-                self.position = 0
-                self.entry_price = 0
-            else:
-                reward = price_diff * 180 # پاداش همراهی با روند
+        # ۱. مدیریت اکشن‌ها با جریمه دقیق 0.0007 (Perfect Balance)
+        if action in [1, 2, 3]: reward -= 0.0007
         
-        else: # WAIT/SELL
-            if self.position == 1:
-                pnl = (row['close'] - self.entry_price) / self.entry_price
-                reward = (pnl * 500) if pnl > 0.01 else -2
-                self.balance *= (1 - self.fee)
-                self.position = 0
-                self.entry_price = 0
-            else:
-                reward = 0.02 # پاداش اندک برای نقد ماندن
+        if action == 1 and self.position == 0:
+            self._open_pos(row, 1, fee)
+        elif action == 2 and self.position == 0:
+            self._open_pos(row, -1, fee)
+        elif action == 3 and self.position != 0:
+            if self.holding_steps < 3: reward -= 0.002
+            self.exit_pos(row['close'], fee)
+
+        # ۲. پاداش Risk-Neutral (22 vs 0.025)
+        price_return = (next_row['close'] / row['close'] - 1)
+        vol_clip = np.clip(row['volatility'], 0.01, 0.05)
+        adj_return = np.clip(price_return / vol_clip, -0.05, 0.05)
+        
+        if self.position == 1: 
+            reward += adj_return * 22
+            reward -= 0.025 * abs(adj_return)
+        elif self.position == -1: 
+            reward -= adj_return * 22
+            reward -= 0.025 * abs(adj_return)
+        
+        # پاداش برای نقد ماندن (Flat is Good)
+        elif self.position == 0 and abs(adj_return) < 0.003:
+            reward += 0.0005
+
+        # ۳. مدیریت دراوداون و خط قرمز ۱۰٪
+        current_equity = self.get_total_equity(next_row['close'])
+        self.peak_equity = max(self.peak_equity, current_equity)
+        drawdown = (self.peak_equity - current_equity) / self.peak_equity
+        reward -= drawdown * 0.05
+        if drawdown > 0.1: reward -= 0.01
+
+        if self.position != 0:
+            pnl = (row['close'] / self.entry_price - 1) * self.position
+            reward -= 0.02 * abs(pnl)
+            
+            # جریمه Chop شرطی
+            trend_strength = abs((row['EMA_20'] - row['EMA_50']) / row['EMA_50'])
+            if trend_strength < 0.0005: reward -= 0.001
+            
+            # تشویق سود (Profit Encouragement)
+            if pnl > 0.04: reward += 0.003
+            elif pnl > 0.02: reward += 0.002
+            
+            # استاپ لاس داینامیک
+            sl = max(0.02, row['volatility'] * 2)
+            if pnl < -sl: self.exit_pos(row['close'], fee)
+
+            self.holding_steps += 1
+            if self.holding_steps > 100: self.exit_pos(row['close'], fee)
 
         self.step_i += 1
-        done = self.step_i >= len(self.df) - 2
+        done = self.step_i >= len(self.df) - 1
         return self._get_obs(), reward, done, False, {}
 
-# ======================
-# 3. اجرای اصلی
-# ======================
-df = get_historical_data()
+    def _open_pos(self, row, side, fee):
+        vol = max(row['volatility'], 0.01)
+        risk_adj = 0.015 * (0.02 / vol)
+        self.position_size = min(self.balance * risk_adj, self.balance * 0.95)
+        self.balance -= self.position_size * (1 + fee)
+        self.entry_price = row['close']
+        self.position = side
+        self.holding_steps = 0
 
-st.sidebar.header("⚙️ تنظیمات مدل")
-init_cash = st.sidebar.number_input("سرمایه ($)", value=1000)
-exchange_fee = st.sidebar.slider("کارمزد (%)", 0.0, 0.5, 0.1) / 100
-sl_val = st.sidebar.slider("حد ضرر (%)", 1, 10, 5) / 100
+    def exit_pos(self, price, fee):
+        pnl = (price / self.entry_price - 1) * self.position
+        realized_val = self.position_size * (1 + pnl)
+        self.balance += realized_val * (1 - fee)
+        self.position = 0
+        self.entry_price = 0
+        self.position_size = 0
 
-if st.sidebar.button("♻️ حذف مدل قبلی"):
-    if os.path.exists("hunter_2026.zip"): os.remove("hunter_2026.zip")
-    st.rerun()
-
-env = BalancedHunterEnv(df, initial_balance=init_cash, stop_loss=sl_val, fee=exchange_fee)
-MODEL_NAME = "hunter_2026"
-
-if not os.path.exists(f"{MODEL_NAME}.zip"):
-    if st.button("🚀 شروع آموزش (۳۰۰,۰۰۰ گام بازنگری)"):
-        with st.spinner("هوش مصنوعی در حال بازنگری تمام فراز و نشیب‌های ۳ سال اخیر..."):
-            model = PPO("MlpPolicy", env, verbose=0, learning_rate=0.0002)
-            model.learn(total_timesteps=300000)
-            model.save(MODEL_NAME)
-        st.success("آموزش تمام شد!")
-        st.rerun()
-
-if os.path.exists(f"{MODEL_NAME}.zip"):
-    model = PPO.load(MODEL_NAME)
-    obs, _ = env.reset()
-    trade_log = []
-    current_trade = None
-    
-    # فیلتر برای شروع از اول ۲۰۲۶ در نمایش نتایج
-    start_of_2026 = pd.to_datetime("2026-01-01")
-
-    for i in range(len(df) - 2):
-        action, _ = model.predict(obs, deterministic=True)
-        row = df.iloc[i]
-        
-        # ثبت معامله فقط اگر بعد از اول ۲۰۲۶ باشد
-        if row['date'] >= start_of_2026:
-            if action == 1 and current_trade is None:
-                current_trade = {"In": row['date'], "Price": row['close']}
-            elif current_trade is not None:
-                next_row = df.iloc[i+1]
-                if action == 0 or (next_row['close'] <= current_trade['Price'] * (1 - sl_val)):
-                    pnl = (((next_row['close'] - current_trade['Price']) / current_trade['Price']) - (2 * exchange_fee))
-                    trade_log.append({
-                        "تاریخ": current_trade['In'],
-                        "ورود": current_trade['Price'],
-                        "خروج": next_row['close'],
-                        "سود %": round(pnl * 100, 2),
-                        "سود $": round(pnl * init_cash, 2)
-                    })
-                    current_trade = None
-        
-        obs, _, done, _, _ = env.step(action)
-        if done: break
-
-    t_df = pd.DataFrame(trade_log)
-    
-    st.divider()
-    st.subheader("📊 عملکرد هوش مصنوعی در سال ۲۰۲۶")
-    if not t_df.empty:
-        c1, c2, c3 = st.columns(3)
-        total_p = t_df['سود $'].sum()
-        c1.metric("سرمایه نهایی", f"${init_cash + total_p:.2f}")
-        c2.metric("سود خالص ۲۰۲۶", f"${total_p:.2f}", f"{(total_p/init_cash)*100:.2f}%")
-        c3.metric("تعداد ترید", len(t_df))
-        st.dataframe(t_df.sort_values(by="تاریخ", ascending=False), use_container_width=True)
-    else:
-        st.warning("در سال ۲۰۲۶ هنوز تریدی با این استراتژی انجام نشده است.")
-
-    st.divider()
-    last_action, _ = model.predict(obs, deterministic=True)
-    if last_action == 1:
-        st.success(f"🎯 سیگنال لحظه‌ای: **BUY** (بر اساس بازنگری روندها)")
-    else:
-        st.info("🎯 سیگنال لحظه‌ای: **WAIT** (در انتظار تایید روند ۲۰۲۶)")
+    def get_total_equity(self, price):
+        if self.position != 0:
+            pnl = (price / self.entry_price - 1) * self.position
+            return self.balance + (self.position_size * (1 + pnl))
+        return self.balance
