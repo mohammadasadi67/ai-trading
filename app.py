@@ -11,11 +11,11 @@ from stable_baselines3 import PPO
 import gymnasium as gym
 from gymnasium import spaces
 
-st.set_page_config(layout="wide", page_title="AI Trend Follower Pro")
-st.title("🚀 AI TRADER: TREND-FOLLOWING & PRICE ACTION")
+st.set_page_config(layout="wide", page_title="AI Hunter Trader")
+st.title("🏹 AI HUNTER: HIGH-QUALITY TRADES ONLY")
 
 # ======================
-# 1. دریافت و پالایش داده‌ها
+# 1. دریافت داده‌ها
 # ======================
 @st.cache_data(ttl=3600)
 def get_historical_data(symbol="BTCUSDT", interval="4h", years=3):
@@ -24,7 +24,7 @@ def get_historical_data(symbol="BTCUSDT", interval="4h", years=3):
     all_candles = []
     last_time = None
     
-    with st.spinner("در حال دریافت دیتای ۳ ساله بایننس..."):
+    with st.spinner("در حال دریافت دیتای ۳ ساله..."):
         while len(all_candles) < total_needed:
             params = {"symbol": symbol, "interval": interval, "limit": 1000}
             if last_time: params["endTime"] = last_time - 1
@@ -33,33 +33,31 @@ def get_historical_data(symbol="BTCUSDT", interval="4h", years=3):
                 if not res or len(res) == 0: break
                 all_candles = res + all_candles
                 last_time = res[0][0]
-                time.sleep(0.02)
+                time.sleep(0.01)
             except: break
 
     df = pd.DataFrame(all_candles, columns=["time", "open", "high", "low", "close", "volume", "ct", "qav", "trades", "tb", "tq", "ig"])
     df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
     df['date'] = pd.to_datetime(df['time'], unit='ms')
     
-    # اندیکاتورهای کمکی برای تشخیص روند
+    # اندیکاتورهای پایه
     df['EMA_Long'] = df['close'].ewm(span=50).mean()
     df['body_pct'] = (df['close'] - df['open']) / df['open']
-    df['range_pct'] = (df['high'] - df['low']) / df['open']
     df['rel_vol'] = df['volume'] / df['volume'].rolling(20).mean()
     
     return df.dropna().reset_index(drop=True)
 
 # ======================
-# 2. محیط معاملاتی با فیلتر روند
+# 2. محیط معاملاتی سخت‌گیر
 # ======================
-class TrendEnv(gym.Env):
-    def __init__(self, df, initial_balance=1000, stop_loss=0.04, fee=0.001):
+class HunterEnv(gym.Env):
+    def __init__(self, df, initial_balance=1000, stop_loss=0.05, fee=0.001):
         super().__init__()
         self.df = df
         self.initial_balance = initial_balance
         self.sl_pct = stop_loss
         self.fee = fee
         self.action_space = spaces.Discrete(2)
-        # ویژگی‌ها: قدرت بدنه، فاصله از EMA، حجم، وضعیت پوزیشن، سود جاری
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(5,), dtype=np.float32)
         self.reset()
 
@@ -83,38 +81,37 @@ class TrendEnv(gym.Env):
         row = self.df.iloc[self.step_i]
         next_row = self.df.iloc[self.step_i + 1]
         price_diff = (next_row['close'] - row['close']) / row['close']
+        
         reward = 0
-
-        # فیلتر روند: اگر قیمت زیر EMA باشد، خرید جریمه می‌شود
-        is_uptrend = row['close'] > row['EMA_Long']
-
+        
         if action == 1: # BUY/HOLD
-            if self.position == 0:
-                if not is_uptrend: # خرید در روند نزولی اشتباه است
-                    reward = -2
+            if self.position == 0: # باز کردن ترید
                 self.position = 1
                 self.entry_price = row['close']
                 self.balance *= (1 - self.fee)
+                reward = -2 # جریمه ورود (باید دلیل خیلی خوبی برای ورود داشته باشه)
             
             pnl = (next_row['close'] / self.entry_price) - 1
             if pnl <= -self.sl_pct: # استاپ خوردن
-                reward = -30
+                reward = -50
                 self.balance *= (1 - self.sl_pct)
                 self.position = 0
                 self.entry_price = 0
             else:
-                reward = price_diff * 100 # پاداش سود
+                reward = price_diff * 100 # پاداش همراهی با روند
         
         else: # WAIT/SELL
-            if self.position == 1: # فروش با سود یا ضرر
+            if self.position == 1: # بستن پوزیشن
                 pnl = (row['close'] - self.entry_price) / self.entry_price
-                reward = (pnl - self.fee) * 150
+                if pnl > 0.02: # فقط پاداش بزرگ برای سودهای بالای ۲٪
+                    reward = pnl * 500 
+                else: # جریمه برای تریدهای بی‌خاصیت و الکی
+                    reward = -10
                 self.balance *= (1 - self.fee)
                 self.position = 0
                 self.entry_price = 0
             else:
-                if is_uptrend and price_diff > 0.01: # جریمه جا ماندن از بازار خوب
-                    reward = -5
+                reward = 0.5 # پاداش برای صبوری و ترید نکردن بیهوده
 
         self.step_i += 1
         done = self.step_i >= len(self.df) - 2
@@ -125,37 +122,33 @@ class TrendEnv(gym.Env):
 # ======================
 df = get_historical_data(years=3)
 
-# Sidebar
-st.sidebar.header("🛠 Settings")
+st.sidebar.header("🛠 تنظیمات شکارچی")
 init_cash = st.sidebar.number_input("سرمایه ($)", value=1000)
 exchange_fee = st.sidebar.slider("کارمزد (%)", 0.0, 0.5, 0.1) / 100
-sl_val = st.sidebar.slider("حد ضرر (%)", 1, 10, 4) / 100
-train_steps = st.sidebar.select_slider("دقت آموزش", options=[50000, 150000, 300000], value=150000)
+sl_val = st.sidebar.slider("حد ضرر (%)", 1, 10, 5) / 100
 
-env = TrendEnv(df, initial_balance=init_cash, stop_loss=sl_val, fee=exchange_fee)
-MODEL_NAME = "trend_model_v1"
-
-if st.sidebar.button("♻️ آموزش مجدد مدل"):
-    if os.path.exists(f"{MODEL_NAME}.zip"): os.remove(f"{MODEL_NAME}.zip")
+if st.sidebar.button("♻️ پاکسازی و آموزش مجدد"):
+    if os.path.exists("hunter_model.zip"): os.remove("hunter_model.zip")
     st.rerun()
 
+env = HunterEnv(df, initial_balance=init_cash, stop_loss=sl_val, fee=exchange_fee)
+MODEL_NAME = "hunter_model"
+
 if not os.path.exists(f"{MODEL_NAME}.zip"):
-    if st.button("🚀 شروع یادگیری (Train)"):
-        with st.spinner("هوش مصنوعی در حال تحلیل روند ۳ ساله..."):
+    if st.button("🚀 شروع آموزش مدل شکارچی (صبور)"):
+        with st.spinner("در حال آموزش دیدن برای " + "نخریدن" + " در مواقع خطر..."):
             model = PPO("MlpPolicy", env, verbose=0, learning_rate=0.0002)
-            model.learn(total_timesteps=train_steps)
+            model.learn(total_timesteps=200000)
             model.save(MODEL_NAME)
-        st.success("آموزش با موفقیت انجام شد!")
+        st.success("آموزش تمام شد!")
         st.rerun()
 
-# --- نمایش نتایج ---
 if os.path.exists(f"{MODEL_NAME}.zip"):
     model = PPO.load(MODEL_NAME)
-    
-    # استخراج معاملات (Backtest)
     obs, _ = env.reset()
     trade_log = []
     current_trade = None
+
     for i in range(len(df) - 2):
         action, _ = model.predict(obs, deterministic=True)
         row = df.iloc[i]
@@ -178,28 +171,21 @@ if os.path.exists(f"{MODEL_NAME}.zip"):
 
     t_df = pd.DataFrame(trade_log)
     
-    st.divider()
     if not t_df.empty:
-        # فیلتر تاریخ سریع
-        date_input = st.date_input("فیلتر تاریخ جدول", [df['date'].min(), df['date'].max()])
-        if len(date_input) == 2:
-            t_df = t_df[(t_df['Date'].dt.date >= date_input[0]) & (t_df['Date'].dt.date <= date_input[1])]
-
+        st.divider()
         c1, c2, c3 = st.columns(3)
-        net_profit = t_df['Profit $'].sum()
-        c1.metric("سرمایه نهایی", f"${init_cash + net_profit:.2f}")
-        c2.metric("سود کل", f"${net_profit:.2f}", f"{(net_profit/init_cash)*100:.2f}%")
-        c3.metric("تعداد معاملات", len(t_df))
-
-        st.write("### 📜 لیست معاملات منتخب هوش مصنوعی")
+        total_p = t_df['Profit $'].sum()
+        c1.metric("سرمایه نهایی", f"${init_cash + total_p:.2f}")
+        c2.metric("سود کل", f"${total_p:.2f}", f"{(total_p/init_cash)*100:.2f}%")
+        c3.metric("تعداد ترید", len(t_df))
         st.dataframe(t_df.sort_values(by="Date", ascending=False), use_container_width=True)
     else:
-        st.warning("⚠️ مدل فعلاً تریدی انجام نداده. دوباره Train کنید.")
+        st.warning("مدل آنقدر سخت‌گیر شده که فعلاً هیچ تریدی پیدا نکرده! دوباره Train کنید.")
 
     # وضعیت زنده
     st.divider()
     last_action, _ = model.predict(obs, deterministic=True)
     if last_action == 1:
-        st.success(f"🎯 سیگنال: **BUY / HOLD** | قیمت: {df.iloc[-1]['close']}")
+        st.success(f"🎯 سیگنال: **BUY** | قیمت: {df.iloc[-1]['close']}")
     else:
-        st.warning("🎯 سیگنال: **WAIT / SELL**")
+        st.info("🎯 سیگنال: **WAIT** (مدل فعلاً منتظر فرصت است)")
