@@ -2,215 +2,198 @@ import numpy as np
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
-
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
-from stable_baselines3.common.utils import get_linear_fn
+from stable_baselines3.common.vec_env import DummyVecEnv
+import streamlit as st
+import requests
+from datetime import datetime
 
-# ===============================
-# 🔥 ENV (FINAL VERSION)
-# ===============================
-class SovereignQuantEnv(gym.Env):
-    def __init__(self, df, initial_balance=1000):
+st.set_page_config(page_title="AI Pro Strategy Lab v2.1", layout="wide")
+
+# ======================
+# 1. Sidebar & Settings
+# ======================
+st.sidebar.header("⚙️ تنظیمات پیشرفته استراتژی")
+selected_ticker = st.sidebar.selectbox("نماد معاملاتی:", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"])
+interval = st.sidebar.selectbox("تایم‌فریم:", ["15m", "1h", "4h"], index=0)  # پیش‌فرض روی 15 دقیقه برای دیتای بیشتر
+init_balance = st.sidebar.number_input("سرمایه اولیه ($):", value=10000)
+commission_rate = st.sidebar.slider("کارمزد صرافی (%):", 0.0, 0.5, 0.07, step=0.01) / 100
+
+st.sidebar.divider()
+st.sidebar.subheader("🧠 تنظیمات پاداش هوش مصنوعی")
+learning_steps = st.sidebar.select_slider("شدت آموزش:", options=[100000, 200000, 500000, 1000000], value=200000)
+risk_tolerance = st.sidebar.slider("حد ضرر (Stop Loss %):", 0.5, 5.0, 1.5) / 100
+
+
+# ======================
+# 2. Advanced Technical Analysis
+# ======================
+@st.cache_data(ttl=3600)
+def get_pro_data(symbol, interval):
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": 1000}
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        df = pd.DataFrame(data, columns=['ts', 'o', 'h', 'l', 'c', 'v', 'ct', 'qv', 'nt', 'tb', 'tq', 'i'])
+        df['close'] = df['c'].astype(np.float32)
+        df['high'] = df['h'].astype(np.float32)
+        df['low'] = df['l'].astype(np.float32)
+
+        # 1. RSI
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-8))))
+
+        # 2. MACD
+        exp1 = df['close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['close'].ewm(span=26, adjust=False).mean()
+        df['macd'] = exp1 - exp2
+        df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+
+        # 3. ATR برای تشخیص نوسان
+        df['tr'] = np.maximum(df['high'] - df['low'],
+                              np.maximum(abs(df['high'] - df['close'].shift()),
+                                         abs(df['low'] - df['close'].shift())))
+        df['atr'] = df['tr'].rolling(window=14).mean()
+
+        df.fillna(0, inplace=True)
+        return df
+    except Exception as e:
+        st.error(f"خطا در دریافت دیتای بایننس: {e}")
+        return pd.DataFrame()
+
+
+# ======================
+# 3. Advanced Trading Environment
+# ======================
+class ProEnv(gym.Env):
+    def __init__(self, df, balance, commission, stop_loss):
         super().__init__()
         self.df = df
-        self.initial_balance = initial_balance
-        self.observation_space = spaces.Box(low=-5, high=5, shape=(10,), dtype=np.float32)
-        self.action_space = spaces.Discrete(4)
+        self.initial_balance = float(balance)
+        self.commission = float(commission)
+        self.stop_loss_pct = stop_loss
+
+        self.action_space = spaces.Discrete(3)
+        self.observation_space = spaces.Box(low=-1e2, high=1e2, shape=(5,), dtype=np.float32)
         self.reset()
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.balance = self.initial_balance
-        self.peak_equity = self.initial_balance
-        self.position = 0
-        self.entry_price = 0
-        self.position_size = 0
-        self.holding_steps = 0
-        self.step_i = 50
+        self.current_step = 30
+        self.position = 0.0
+        self.entry_price = 0.0
         return self._get_obs(), {}
 
     def _get_obs(self):
-        row = self.df.iloc[self.step_i]
-        equity = self.get_total_equity(row['close'])
-        pnl = (row['close'] / self.entry_price - 1) * self.position if self.entry_price > 0 else 0
+        row = self.df.iloc[self.current_step]
+        unrealized_pnl = 0.0
+        if self.position > 0:
+            unrealized_pnl = (row['close'] - self.entry_price) / self.entry_price
 
         obs = np.array([
-            ((row['EMA_20'] - row['EMA_50']) / row['EMA_50']) * 20,
-            (row['close'] / row['EMA_50'] - 1) * 10,
-            row['volatility'] / 0.04,
-            row['rel_vol'] - 1.0,
-            (row['close'] / self.df.iloc[max(self.step_i-5, 0)]['close'] - 1) * 10,
-            (row['RSI'] - 50) / 20,
-            float(self.position),
-            pnl * 5,
-            min(float(self.holding_steps) / 100.0, 1.0),
-            ((self.peak_equity - equity) / self.peak_equity) * 5
+            (row['rsi'] - 50) / 25,
+            (row['macd'] - row['signal']) / (row['close'] * 0.01 + 1e-8),
+            row['atr'] / (row['close'] + 1e-8) * 100,
+            self.position,
+            unrealized_pnl * 20  # بزرگنمایی سود برای درک بهتر هوش مصنوعی
         ], dtype=np.float32)
-
-        return np.clip(np.nan_to_num(obs), -5, 5)
+        return obs
 
     def step(self, action):
-        row = self.df.iloc[self.step_i]
-        next_row = self.df.iloc[self.step_i + 1]
+        row = self.df.iloc[self.current_step]
+        price = float(row['close'])
+        reward = 0.0
 
-        fee = 0.001
-        reward = 0
+        # مدیریت حد ضرر سخت‌گیرانه
+        if self.position == 1.0:
+            current_pnl = (price - self.entry_price) / self.entry_price
+            if current_pnl < -self.stop_loss_pct:
+                action = 2  # اجبار به فروش در صورت برخورد به حد ضرر
 
-        if action in [1,2,3]:
-            reward -= 0.0007
+        # منطق اکشن‌ها
+        if action == 1 and self.position == 0:  # ورود به معامله
+            self.position = 1.0
+            self.entry_price = price
+            self.balance -= self.balance * self.commission
+            # جریمه سنگین‌تر برای جلوگیری از تریدهای بیهوده (باید سود احتمالی از این جریمه بیشتر باشد)
+            reward = -0.25
 
-        if action == 1 and self.position == 0:
-            self._open_pos(row, 1, fee)
-        elif action == 2 and self.position == 0:
-            self._open_pos(row, -1, fee)
-        elif action == 3 and self.position != 0:
-            if self.holding_steps < 3:
-                reward -= 0.002
-            self.exit_pos(row['close'], fee)
+        elif action == 2 and self.position == 1:  # خروج از معامله
+            pnl = (price - self.entry_price) / self.entry_price
+            # پاداش تصاعدی: سودهای کوچک پاداش کمی دارند، سودهای بزرگ پاداش عالی
+            if pnl > 0:
+                reward = (pnl * 150) ** 1.2
+            else:
+                reward = pnl * 200  # تنبیه شدید برای ضرر
 
-        price_return = (next_row['close'] / row['close'] - 1)
-        vol = np.clip(row['volatility'], 0.01, 0.05)
-        adj_return = np.clip(price_return / vol, -0.05, 0.05)
+            self.balance *= (1 + pnl - self.commission)
+            self.position = 0.0
+            self.entry_price = 0.0
 
-        if self.position == 1:
-            reward += adj_return * 22
-            reward -= 0.025 * abs(adj_return)
-        elif self.position == -1:
-            reward -= adj_return * 22
-            reward -= 0.025 * abs(adj_return)
-        elif self.position == 0 and abs(adj_return) < 0.003:
-            reward += 0.0005
+        elif action == 0 and self.position == 1:  # نگهداری پوزیشن
+            pnl = (price - self.entry_price) / self.entry_price
+            if pnl > self.commission * 2:  # فقط اگر در سود قابل توجه است پاداش بگیرد
+                reward = 0.01
+            else:
+                reward = -0.01  # جریمه برای باز نگه داشتن پوزیشن درجا زن
 
-        equity = self.get_total_equity(next_row['close'])
-        self.peak_equity = max(self.peak_equity, equity)
-        dd = (self.peak_equity - equity) / self.peak_equity
+        elif action == 0 and self.position == 0:  # صبر کردن
+            reward = 0.005  # پاداش کوچک برای صبر و معامله نکردن در بازار بد
 
-        reward -= dd * 0.05
-        if dd > 0.1:
-            reward -= 0.01
-
-        if self.position != 0:
-            pnl = (row['close'] / self.entry_price - 1) * self.position
-            reward -= 0.02 * abs(pnl)
-
-            sl = max(0.02, row['volatility'] * 2)
-            if pnl < -sl:
-                self.exit_pos(row['close'], fee)
-
-            if pnl > 0.04:
-                reward += 0.003
-            elif pnl > 0.02:
-                reward += 0.002
-
-            self.holding_steps += 1
-            if self.holding_steps > 100:
-                self.exit_pos(row['close'], fee)
-
-        self.step_i += 1
-        done = self.step_i >= len(self.df) - 1
-        return self._get_obs(), reward, done, False, {}
-
-    def _open_pos(self, row, side, fee):
-        vol = max(row['volatility'], 0.01)
-        risk = 0.015 * (0.02 / vol)
-        self.position_size = min(self.balance * risk, self.balance * 0.95)
-
-        self.balance -= self.position_size * (1 + fee)
-        self.entry_price = row['close']
-        self.position = side
-        self.holding_steps = 0
-
-    def exit_pos(self, price, fee):
-        pnl = (price / self.entry_price - 1) * self.position
-        val = self.position_size * (1 + pnl)
-        self.balance += val * (1 - fee)
-
-        self.position = 0
-        self.entry_price = 0
-        self.position_size = 0
-
-    def get_total_equity(self, price):
-        if self.position != 0:
-            pnl = (price / self.entry_price - 1) * self.position
-            return self.balance + self.position_size * (1 + pnl)
-        return self.balance
+        self.current_step += 1
+        done = self.current_step >= len(self.df) - 1
+        return self._get_obs(), float(reward), done, False, {}
 
 
-# ===============================
-# 🔥 TRAIN FUNCTION
-# ===============================
-def train(df):
+# ======================
+# 4. Interface & Execution
+# ======================
+df = get_pro_data(selected_ticker, interval)
 
-    train_df = df[df.index < "2025-01-01"]
-    val_df = df[df.index >= "2025-01-01"]
+if not df.empty:
+    st.title(f"🚀 پلتفرم هوش مصنوعی بایننس: {selected_ticker}")
 
-    def make_env(data):
-        return lambda: Monitor(SovereignQuantEnv(data))
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.line_chart(df.set_index('ts')['close'], height=400)
 
-    env = SubprocVecEnv([make_env(train_df) for _ in range(8)])
-    env = VecNormalize(env, norm_obs=True, norm_reward=True)
+    with col2:
+        st.info("اطلاعات استراتژی:")
+        st.write(f"تعداد داده‌ها: {len(df)}")
+        st.write(f"اندیکاتورها: RSI, MACD, ATR")
 
-    eval_env = SubprocVecEnv([make_env(val_df)])
-    eval_env = VecNormalize(eval_env, training=False)
+    if st.button('🧠 شروع آموزش و بک‌تست نهایی'):
+        with st.status("هوش مصنوعی در حال تحلیل الگوهای بازار...") as status:
+            env = DummyVecEnv([lambda: ProEnv(df, init_balance, commission_rate, risk_tolerance)])
 
-    lr = get_linear_fn(3e-4, 1e-5, 1.0)
+            # تنظیم پارامترهای PPO برای یادگیری عمیق‌تر
+            model = PPO("MlpPolicy", env, verbose=0, learning_rate=5e-5, n_steps=2048, batch_size=128)
+            model.learn(total_timesteps=learning_steps)
 
-    model = PPO(
-        "MlpPolicy",
-        env,
-        learning_rate=lr,
-        batch_size=256,
-        gamma=0.995,
-        target_kl=0.02,
-        verbose=1
-    )
+            # تست
+            test_env = ProEnv(df, init_balance, commission_rate, risk_tolerance)
+            obs, _ = test_env.reset()
+            balances = [init_balance]
+            done = False
 
-    model.learn(1_000_000)
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, done, _, _ = test_env.step(action)
+                balances.append(test_env.balance)
 
-    model.save("model.zip")
-    env.save("norm.pkl")
+            status.update(label="بک‌تست کامل شد!", state="complete")
 
+        # نمایش نتایج
+        st.divider()
+        res_col1, res_col2, res_col3 = st.columns(3)
+        final_b = balances[-1]
+        res_col1.metric("سرمایه نهایی", f"${final_b:,.2f}")
+        res_col2.metric("بازدهی کل", f"{((final_b / init_balance) - 1) * 100:+.2f}%")
+        res_col3.metric("وضعیت نهایی", "سودده ✅" if final_b > init_balance else "ضررده ❌")
 
-# ===============================
-# 🔥 BACKTEST
-# ===============================
-def backtest(df):
-
-    env = SubprocVecEnv([lambda: SovereignQuantEnv(df)])
-    env = VecNormalize.load("norm.pkl", env)
-
-    env.training = False
-    env.norm_reward = False
-
-    model = PPO.load("model.zip")
-
-    obs = env.reset()
-    equity = []
-
-    for _ in range(len(df)-1):
-        action, _ = model.predict(obs)
-        obs, _, done, _, _ = env.step(action)
-
-        equity.append(env.get_attr("balance")[0])
-
-        if done:
-            break
-
-    return equity
-
-
-# ===============================
-# 🔥 RUN
-# ===============================
-if __name__ == "__main__":
-
-    df = pd.read_csv("data.csv", index_col=0, parse_dates=True)
-
-    train(df)
-
-    eq = backtest(df)
-
-    print("Final Balance:", eq[-1])
+        st.subheader("نمودار رشد سرمایه (Equity Curve)")
+        st.line_chart(balances)
