@@ -1,20 +1,9 @@
-import requests
 import pandas as pd
 
-print("START...")
+print("TEST MODE")
 
-url = "https://data-api.binance.vision/api/v3/klines"
-params = {
-    "symbol": "BTCUSDT",
-    "interval": "4h",
-    "limit": 200
-}
+df = pd.DataFrame({
+    "Close": [100, 102, 101, 105, 110]
+})
 
-data = requests.get(url, params=params, timeout=10).json()
-
-print("DATA RECEIVED:", len(data))
-
-df = pd.DataFrame(data)
-print("DF OK")
-
-print("DONE")
+print(df)
