@@ -4,109 +4,78 @@ import numpy as np
 import requests
 from datetime import date
 
-st.set_page_config(layout="wide", page_title="BTC ULTRA SAFE V17")
-st.title("🐋 BTC PRO: Ultra Safe Mode (V17)")
+st.set_page_config(layout="wide", page_title="BTC TREND HUNTER V18")
+st.title("🐋 BTC PRO: Trend Hunter (V18 - Max Profit)")
 
 # ======================
-# 1. SAFE DATA LOADER (رفع خطای KeyError)
+# DATA LOADER
 # ======================
 @st.cache_data(ttl=3600)
 def get_data(start_str="2023-01-01"):
-    endpoints = [
-        "https://api1.binance.com/api/v3/klines",
-        "https://api2.binance.com/api/v3/klines",
-        "https://data-api.binance.vision/api/v3/klines"
-    ]
+    url = "https://api1.binance.com/api/v3/klines"
     start_ts = int(pd.Timestamp(start_str).timestamp() * 1000)
-    all_data = []
-
-    for url in endpoints:
-        try:
-            params = {"symbol": "BTCUSDT", "interval": "1h", "startTime": start_ts, "limit": 1000}
-            res = requests.get(url, params=params, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                if data and isinstance(data, list):
-                    all_data = data
-                    break
-        except: continue
-
-    if not all_data:
-        return pd.DataFrame() # برگرداندن دیتافریم خالی در صورت شکست
-
-    df = pd.DataFrame(all_data).iloc[:, :5]
-    df.columns = ["Time", "Open", "High", "Low", "Close"]
-    df["Time"] = pd.to_datetime(df["Time"], unit="ms")
-    df.set_index("Time", inplace=True)
-    return df.astype(float)
+    params = {"symbol": "BTCUSDT", "interval": "1h", "startTime": start_ts, "limit": 1000}
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        data = res.json()
+        df = pd.DataFrame(data).iloc[:, :5]
+        df.columns = ["Time", "Open", "High", "Low", "Close"]
+        df["Time"] = pd.to_datetime(df["Time"], unit="ms")
+        df.set_index("Time", inplace=True)
+        return df.astype(float)
+    except: return pd.DataFrame()
 
 # ======================
-# 2. SIDEBAR
+# PROCESS
 # ======================
 with st.sidebar:
-    st.header("⚙️ تنظیمات ایمنی")
+    st.header("⚙️ تنظیمات شکارچی")
     start_dt = st.date_input("Start Date", value=date(2023,1,1))
     end_dt = st.date_input("End Date", value=date.today())
-    st.divider()
     capital = st.number_input("Capital ($)", value=1000.0)
-    fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
-    st.success("سنسور ورود: روی حالت 'تاییدیه سنگین' تنظیم شد.")
+    fee = 0.0005 # 0.05% کارمزد ثابت
 
-# ======================
-# 3. CORE PROCESS
-# ======================
-with st.spinner("در حال فراخوانی دیتا..."):
-    df_raw = get_data(start_dt.strftime("%Y-%m-%d"))
-
-# جلوگیری از خطای KeyError: اگر دیتا خالی بود، بقیه کد اجرا نشود
-if df_raw.empty or "Close" not in df_raw.columns:
-    st.error("⚠️ خطا در دریافت دیتا از بایننس. لطفا چند لحظه دیگر صفحه را Refresh کنید.")
+df_raw = get_data("2023-01-01")
+if df_raw.empty:
+    st.error("دیتا دریافت نشد.")
     st.stop()
 
 df = df_raw.copy()
-
-# محاسبه اندیکاتورها با اطمینان از وجود ستون Close
-df["MA50"] = df["Close"].rolling(50).mean()
 df["MA200"] = df["Close"].rolling(200).mean()
-df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-
-# RSI
-delta = df["Close"].diff()
-gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-df["RSI"] = 100 - (100 / (1 + (gain/loss)))
+df["HH_20"] = df["High"].rolling(20).max().shift(1) # سقف ۲۰ ساعت اخیر
+df["LL_20"] = df["Low"].rolling(20).min().shift(1)  # کف ۲۰ ساعت اخیر
 
 # ======================
-# 4. ULTRA SAFE ENGINE (فقط ورود با ریسک کم)
+# ENGINE (TREND FOLLOWING)
 # ======================
 df["Action"] = "WAIT"
 df["PnL"] = 0.0
 balance, in_pos = 1.0, False
 entry = sl = 0
 
-for i in range(200, len(df)):
-    c, l, rsi = df["Close"].iloc[i], df["Low"].iloc[i], df["RSI"].iloc[i]
-    ma50, ma200, atr = df["MA50"].iloc[i], df["MA200"].iloc[i], df["ATR"].iloc[i]
+for i in range(20, len(df)):
+    t = df.index[i]
+    c, l, h = df["Close"].iloc[i], df["Low"].iloc[i], df["High"].iloc[i]
+    ma200, hh, ll = df["MA200"].iloc[i], df["HH_20"].iloc[i], df["LL_20"].iloc[i]
 
-    # ورود فقط وقتی همه چیز سبز است + RSI بالای 60 (قدرت مطلق)
-    if not in_pos:
-        if c > ma50 > ma200 and rsi > 60:
+    # ورود: قیمت سقف ۲۰ ساعته را بزند و بالای MA200 باشد
+    if not in_pos and (start_dt <= t.date() <= end_dt):
+        if c > hh and c > ma200:
             entry = c
-            sl = entry - (atr * 4.0) # استاپ بسیار عریض برای حذف نوسان ۲۰۲۶
+            sl = ll # استاپ روی کف ۲۰ ساعته (منطقی و متحرک)
             in_pos = True
             df.iloc[i, df.columns.get_loc("Action")] = "BUY"
 
     elif in_pos:
         df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
         
-        # مدیریت خروج سخت‌گیرانه برای حفظ سود
-        if c > entry * 1.05: sl = max(sl, entry) # ریسک فری سریع
-        if c > entry * 1.15: sl = max(sl, c * 0.92) # قفل سود
+        # تریلینگ استاپ: همیشه استاپ را به کف ۲۰ ساعت اخیر منتقل کن
+        sl = max(sl, ll)
 
         exit_p = 0
-        if l <= sl or c < ma50: # خروج با اولین نشانه ضعف
-            exit_p = c
-
+        if l <= sl:
+            exit_p = sl
+        
         if exit_p > 0:
             p = ((exit_p - entry) / entry) - (fee * 2)
             balance *= (1 + p)
@@ -115,7 +84,7 @@ for i in range(200, len(df)):
             in_pos = False
 
 # ======================
-# 5. RESULTS
+# RESULTS
 # ======================
 net_profit = (balance - 1) * 100
 c1, c2, c3 = st.columns(3)
@@ -124,9 +93,5 @@ c2.metric("Final Balance", f"${capital * balance:,.2f}")
 c3.metric("Trades", len(df[df["Action"] == "EXIT"]))
 
 st.divider()
-st.subheader("📝 لیست تریدهای ایمن")
-trades = df[df["Action"].isin(["BUY", "EXIT"])].copy()
-if not trades.empty:
-    st.dataframe(trades[["Close", "Action", "PnL"]].sort_index(ascending=False), use_container_width=True)
-else:
-    st.info("در این بازه زمانی، سیگنالی با ریسک پایین پیدا نشد.")
+st.subheader("📊 وضعیت روزانه و تریدها")
+st.dataframe(df[df["Action"] != "WAIT"].sort_index(ascending=False), use_container_width=True)
