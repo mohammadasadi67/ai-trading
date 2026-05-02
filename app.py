@@ -88,7 +88,7 @@ if not in_pos:
     distance = (close - ema20) / ema20
 
     # نزدیک EMA باشه
-    near_ema = abs(distance) < 0.01
+    near_ema = abs(distance) < 0.015
 
     # مومنتوم مثبت
     momentum = close > df["Close"].iloc[i-1]
