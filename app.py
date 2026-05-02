@@ -4,121 +4,192 @@ import numpy as np
 import requests
 from datetime import date
 
-st.set_page_config(layout="wide", page_title="BTC LONG-TERM BACKTEST")
-st.title("🧪 BTC BACKTEST: Long-Term vs Short-Term")
+st.set_page_config(layout="wide", page_title="BTC BACKTEST PRO")
+st.title("🧪 BTC BACKTEST (REAL RANGE ENGINE)")
 
 # ======================
-# DATA FETCHING (Dynamic Interval)
+# DATA (FULL HISTORY)
 # ======================
-@st.cache_data(ttl=3600)
-def get_data(symbol="BTCUSDT", interval="1d", limit=1500):
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    try:
+@st.cache_data(ttl=600)
+def get_data(start_str="2023-01-01"):
+
+    url = "https://data-api.binance.vision/api/v3/klines"
+    start_ts = int(pd.Timestamp(start_str).timestamp() * 1000)
+
+    all_data = []
+
+    while True:
+        params = {
+            "symbol": "BTCUSDT",
+            "interval": "1h",
+            "startTime": start_ts,
+            "limit": 1000
+        }
+
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
-        df = pd.DataFrame(data, columns=["time","open","high","low","close","volume","ct","qav","trades","tb","tq","ig"])
-        df["time"] = pd.to_datetime(df["time"], unit="ms")
-        df = df[["time","open","high","low","close"]]
-        df.columns = ["Time","Open","High","Low","Close"]
-        df.set_index("Time", inplace=True)
-        return df.astype(float)
-    except:
-        return pd.DataFrame()
+
+        if not data:
+            break
+
+        all_data.extend(data)
+
+        last_time = data[-1][0]
+        start_ts = last_time + 1
+
+        if len(data) < 1000:
+            break
+
+    df = pd.DataFrame(all_data, columns=[
+        "time","open","high","low","close","volume",
+        "ct","qav","trades","tb","tq","ig"
+    ])
+
+    df["time"] = pd.to_datetime(df["time"], unit="ms")
+    df = df[["time","open","high","low","close"]]
+    df.columns = ["Time","Open","High","Low","Close"]
+    df.set_index("Time", inplace=True)
+
+    return df.astype(float)
 
 # ======================
 # SIDEBAR
 # ======================
 with st.sidebar:
-    st.header("🗓️ تنظیمات بازه")
-    # انتخاب تایم‌فریم برای حل مشکل محدودیت تعداد کندل
-    time_mode = st.radio("تایم‌فریم تحلیل:", 
-                         ["روزانه (برای بک‌تست طولانی از 2023)", 
-                          "یک ساعته (فقط 2 ماه اخیر)"])
-    
-    interval = "1d" if "روزانه" in time_mode else "1h"
-    
-    start_dt = st.date_input("از تاریخ", value=date(2023, 1, 1))
-    end_dt = st.date_input("تا تاریخ", value=date(2026, 5, 2))
-    
+    st.header("📅 Backtest Range")
+    start_dt = st.date_input("From", value=date(2023,1,1))
+    end_dt = st.date_input("To", value=date.today())
+
     st.divider()
-    capital = st.number_input("سرمایه اولیه ($)", value=1000.0)
-    fee = st.slider("کارمزد (%)", 0.0, 0.5, 0.05) / 100
+    st.header("💰 Capital")
+    capital = st.number_input("Capital ($)", value=1000.0)
+    fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
 
-# دریافت دیتا (اگر روزانه باشد 1500 کندل یعنی حدود 4 سال دیتا)
-df_raw = get_data(interval=interval)
+# ======================
+# LOAD DATA
+# ======================
+df_raw = get_data("2023-01-01")
 
-if not df_raw.empty:
-    # ======================
-    # INDICATORS
-    # ======================
-    df = df_raw.copy()
-    df["MA50"] = df["Close"].rolling(50).mean()
-    df["MA200"] = df["Close"].rolling(200).mean()
-    df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-    
-    delta = df["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    df["RSI"] = 100 - (100 / (1 + (gain/loss)))
+# ======================
+# INDICATORS
+# ======================
+df = df_raw.copy()
 
-    # ======================
-    # ENGINE (PRO TREND)
-    # ======================
-    df["Action"] = "WAIT"
-    df["PnL_Trade"] = 0.0
-    balance = 1.0
-    in_pos = False
-    entry_val = sl_val = highest = 0
+df["MA50"] = df["Close"].rolling(50).mean()
+df["MA200"] = df["Close"].rolling(200).mean()
+df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
 
-    for i in range(50, len(df)):
-        curr_dt = df.index[i].date()
-        if not (start_dt <= curr_dt <= end_dt):
-            continue
+# RSI
+delta = df["Close"].diff()
+gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+df["RSI"] = 100 - (100 / (1 + (gain/loss)))
 
-        c, h, l = df["Close"].iloc[i], df["High"].iloc[i], df["Low"].iloc[i]
-        rsi, ma50, ma200, atr = df["RSI"].iloc[i], df["MA50"].iloc[i], df["MA200"].iloc[i], df["ATR"].iloc[i]
+# ======================
+# ENGINE
+# ======================
+df["Action"] = "WAIT"
+df["PnL"] = 0.0
 
-        if not in_pos:
-            if c > ma50 > ma200 and 55 < rsi < 70:
-                in_pos, entry_val = True, c
-                sl_val = entry_val - (atr * 1.5)
-                highest = entry_val
-                df.iloc[i, df.columns.get_loc("Action")] = "BUY"
-        else:
-            df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
-            highest = max(highest, h)
-            if highest > entry_val * 1.03:
-                sl_val = max(sl_val, highest * 0.96)
-            
-            if l <= sl_val:
-                pnl = ((sl_val - entry_val) / entry_val) - (fee * 2)
-                balance *= (1 + pnl)
-                df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
-                df.iloc[i, df.columns.get_loc("PnL_Trade")] = pnl * 100
-                in_pos = False
+balance = 1.0
+in_pos = False
+entry = sl = highest = 0
 
-    # ======================
-    # DISPLAY
-    # ======================
-    df_final = df[(df.index.date >= start_dt) & (df.index.date <= end_dt)].copy()
-    
-    col1, col2 = st.columns(2)
-    col1.metric("Net Profit %", f"{(balance-1)*100:.2f}%")
-    col2.metric("Final Balance", f"${capital * balance:,.2f}")
+for i in range(200, len(df)):
 
-    st.subheader(f"📊 گزارش معاملات ({interval})")
-    
-    def style_act(val):
-        color = {'BUY': '#2ecc71', 'EXIT': '#e74c3c', 'HOLD': '#3498db'}.get(val, '#95a5a6')
-        return f'background-color: {color}; color: white; font-weight: bold'
+    t = df.index[i]
+    if not (start_dt <= t.date() <= end_dt):
+        continue
 
-    # اگر تایم‌فریم روزانه است، تجمیع نمی‌خواهیم، مستقیم نشان می‌دهیم
-    st.dataframe(
-        df_final[["Close", "Action", "PnL_Trade"]].sort_index(ascending=False)
-        .style.map(style_act, subset=['Action'])
-        .format({"PnL_Trade": "{:+.2f}%", "Close": "{:,.1f}"}),
-        use_container_width=True
-    )
-else:
-    st.error("دیتا از بایننس دریافت نشد.")
+    c = df["Close"].iloc[i]
+    h = df["High"].iloc[i]
+    l = df["Low"].iloc[i]
+
+    rsi = df["RSI"].iloc[i]
+    ma50 = df["MA50"].iloc[i]
+    ma200 = df["MA200"].iloc[i]
+    atr = df["ATR"].iloc[i]
+
+    # ENTRY
+    if not in_pos:
+        if c > ma50 > ma200 and 55 < rsi < 68:
+            entry = c
+            sl = entry - (atr * 1.2)
+            highest = entry
+            in_pos = True
+            df.iloc[i, df.columns.get_loc("Action")] = "BUY"
+
+    # HOLD
+    else:
+        df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
+
+        if h > highest:
+            highest = h
+
+        # 🔥 Risk Free
+        if highest > entry * 1.02:
+            sl = max(sl, entry)
+
+        # 🔥 Profit Lock
+        if highest > entry * 1.04:
+            sl = max(sl, highest * 0.96)
+
+        exit_price = 0
+
+        if l <= sl:
+            exit_price = sl
+
+        # EXIT
+        if exit_price > 0:
+            pnl = ((exit_price - entry) / entry) - (fee * 2)
+            balance *= (1 + pnl)
+
+            df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
+            df.iloc[i, df.columns.get_loc("PnL")] = pnl * 100
+
+            in_pos = False
+
+# ======================
+# FILTER DISPLAY RANGE
+# ======================
+df_display = df[(df.index.date >= start_dt) & (df.index.date <= end_dt)].copy()
+
+df_display["Date"] = df_display.index.date
+
+daily = df_display.groupby("Date").agg({
+    "Close": "last",
+    "Action": lambda x: "BUY" if "BUY" in x.values else ("EXIT" if "EXIT" in x.values else ("HOLD" if "HOLD" in x.values else "WAIT")),
+    "PnL": "sum"
+})
+
+# ======================
+# METRICS
+# ======================
+net_profit = (balance - 1) * 100
+
+c1, c2 = st.columns(2)
+c1.metric("Net Profit %", f"{net_profit:.2f}%")
+c2.metric("Final Balance", f"${capital * balance:,.2f}")
+
+# ======================
+# TABLE
+# ======================
+st.divider()
+st.subheader(f"📊 Trades from {start_dt} to {end_dt}")
+
+def color(x):
+    colors = {
+        "BUY": "#2ecc71",
+        "EXIT": "#e74c3c",
+        "HOLD": "#3498db",
+        "WAIT": "#95a5a6"
+    }
+    return f"background-color:{colors.get(x,'white')};color:white"
+
+st.dataframe(
+    daily.sort_index(ascending=False)
+    .style.map(color, subset=["Action"])
+    .format({"PnL": "{:+.2f}%", "Close": "{:,.1f}"}),
+    use_container_width=True,
+    height=600
+)
