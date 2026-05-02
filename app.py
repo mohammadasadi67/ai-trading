@@ -5,41 +5,77 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("🐋 BTC SMART WHALE (PRO FIXED)")
+st.title("🐋 BTC SMART WHALE (FULL DATA ENGINE)")
 
 # ======================
-# DATA (SAFE)
+# DATA (LOOP REAL)
 # ======================
 @st.cache_data(ttl=600)
-def get_data():
+def get_data(start_str="2023-01-01"):
+
     url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "1h", "limit": 1500}
+    start_ts = int(pd.Timestamp(start_str).timestamp() * 1000)
 
-    try:
-        data = requests.get(url, params=params, timeout=10).json()
-        df = pd.DataFrame(data).iloc[:, :5]
+    all_data = []
+    last_time = None
 
-        df.columns = ["Time","Open","High","Low","Close"]
-        df["Time"] = pd.to_datetime(df["Time"], unit="ms")
-        df.set_index("Time", inplace=True)
+    while True:
+        params = {
+            "symbol": "BTCUSDT",
+            "interval": "1h",
+            "startTime": start_ts,
+            "limit": 1000
+        }
 
-        return df.astype(float)
-    except:
+        try:
+            res = requests.get(url, params=params, timeout=10)
+            data = res.json()
+
+            if not isinstance(data, list) or not data:
+                break
+
+            if last_time == data[-1][0]:
+                break
+
+            last_time = data[-1][0]
+
+            all_data.extend(data)
+            start_ts = last_time + 1
+
+            if len(data) < 1000:
+                break
+
+        except:
+            break
+
+    if not all_data:
         return pd.DataFrame()
 
-df = get_data()
+    df = pd.DataFrame(all_data).iloc[:, :5]
+    df.columns = ["Time","Open","High","Low","Close"]
 
-if df.empty:
-    st.error("❌ Data Error")
-    st.stop()
+    df["Time"] = pd.to_datetime(df["Time"], unit="ms")
+    df.set_index("Time", inplace=True)
+
+    return df.astype(float)
 
 # ======================
 # SETTINGS
 # ======================
 with st.sidebar:
-    start_dt = st.date_input("Start", value=date(2024,1,1))
+    start_dt = st.date_input("Start", value=date(2023,1,1))
     end_dt = st.date_input("End", value=date.today())
     capital = st.number_input("Capital", value=1000.0)
+    fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
+
+# ======================
+# LOAD DATA
+# ======================
+df = get_data("2023-01-01")
+
+if df.empty:
+    st.error("❌ Data load failed")
+    st.stop()
 
 # ======================
 # INDICATORS
@@ -49,7 +85,7 @@ df["H_24"] = df["High"].rolling(24).max().shift(1)
 df["L_24"] = df["Low"].rolling(24).min().shift(1)
 
 # ======================
-# ENGINE
+# ENGINE (REAL)
 # ======================
 df["Action"] = "WAIT"
 df["Entry"] = 0.0
@@ -76,9 +112,7 @@ for i in range(200, len(df)):
 
     idx = df.index[i]
 
-    # ======================
-    # ENTRY (با فیلتر روند)
-    # ======================
+    # ENTRY
     if not in_pos and (start_dt <= t.date() <= end_dt):
 
         trend_ok = (c > ma200) and (ma200 > ma200_prev)
@@ -93,9 +127,7 @@ for i in range(200, len(df)):
             df.at[idx, "Action"] = "BUY"
             df.at[idx, "Entry"] = entry
 
-    # ======================
     # HOLD
-    # ======================
     elif in_pos:
 
         df.at[idx, "Action"] = "HOLD"
@@ -116,7 +148,7 @@ for i in range(200, len(df)):
 
         # EXIT
         if l <= sl:
-            pnl = (sl - entry) / entry
+            pnl = ((sl - entry) / entry) - (fee * 2)
             balance *= (1 + pnl)
 
             df.at[idx, "Action"] = "EXIT"
@@ -148,13 +180,15 @@ daily = daily[(daily.index >= start_dt) & (daily.index <= end_dt)]
 # METRICS
 # ======================
 net_profit = (balance - 1) * 100
+trades = len(df[df["Action"] == "EXIT"])
 
-c1, c2 = st.columns(2)
+c1, c2, c3 = st.columns(3)
 c1.metric("Net Profit %", f"{net_profit:.2f}%")
 c2.metric("Final Balance", f"${capital * balance:,.2f}")
+c3.metric("Trades", trades)
 
 # ======================
-# STYLE (FIXED)
+# STYLE
 # ======================
 def color_action(val):
     return {
