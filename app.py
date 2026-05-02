@@ -5,7 +5,7 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("SPOT SWING SYSTEM (CONTROLLED RL-LIKE)")
+st.title("SPOT SWING SYSTEM (HOLD SMART MODE)")
 
 # ======================
 # DATA
@@ -46,15 +46,13 @@ df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
 df_daily["MA20"] = df_daily["Close"].rolling(20).mean()
 
 # ======================
-# PIVOTS (SR)
+# SUPPORT / RESISTANCE
 # ======================
 def pivots(df, w=5):
     highs = df["High"]
     lows = df["Low"]
-
     piv_high = highs[(highs.shift(w) < highs) & (highs.shift(-w) < highs)]
     piv_low = lows[(lows.shift(w) > lows) & (lows.shift(-w) > lows)]
-
     return piv_low.dropna(), piv_high.dropna()
 
 supports, resistances = pivots(df)
@@ -68,7 +66,6 @@ wins = 0
 losses = 0
 total_profit = 0
 total_loss = 0
-
 last_trade_index = -50
 
 df["Signal"] = "WAIT"
@@ -76,62 +73,50 @@ df["PnL"] = np.nan
 df["Confidence"] = 0.0
 
 # ======================
-# SCORE FUNCTION
+# SCORE (RL-like)
 # ======================
 def score(i):
     s = 0
-
     if df["Close"].iloc[i] > df["MA20"].iloc[i]:
         s += 1
-
     if df_daily["Close"].iloc[-1] > df_daily["MA20"].iloc[-1]:
         s += 1
-
-    recent_high = df["High"].iloc[i-8:i].max()
-    if df["Close"].iloc[i] > recent_high:
+    if df["Close"].iloc[i] > df["High"].iloc[i-8:i].max():
         s += 1
-
     if len(supports) > 0:
-        nearest = supports.iloc[-1]
-        dist = (df["Close"].iloc[i] - nearest) / df["Close"].iloc[i]
+        dist = (df["Close"].iloc[i] - supports.iloc[-1]) / df["Close"].iloc[i]
         if dist < 0.02:
             s += 1
-
     return s
 
 # ======================
-# STRATEGY LOOP
+# STRATEGY
 # ======================
 for i in range(30, len(df)-1):
 
-    # ⛔ جلوگیری از overtrading
     if i - last_trade_index < 10:
         continue
 
     sc = score(i)
-
-    # 🔥 فقط بهترین شرایط
     if sc < 4:
         continue
 
     entry = df["Close"].iloc[i]
     atr = df["ATR"].iloc[i]
 
-    # ⛔ نخریدن نزدیک مقاومت
+    # جلوگیری از خرید نزدیک مقاومت
     if len(resistances) > 0:
-        nearest_r = resistances.iloc[-1]
-        dist_r = (nearest_r - entry) / entry
-        if dist_r < 0.015:
+        dist_r = (resistances.iloc[-1] - entry) / entry
+        if dist_r < 0.02:
             continue
 
-    # SL / TP بهینه
-    sl = entry - atr * 0.7
-    tp = entry + atr * 1.8
+    sl = entry - atr * 0.6
+    tp = entry + atr * 3   # دور → برای رشد
 
     highest = entry
     exit_price = entry
 
-    # HOLD
+    # 🔥 HOLD واقعی (تا هرجا لازم شد)
     for j in range(i+1, len(df)):
 
         high = df["High"].iloc[j]
@@ -140,12 +125,15 @@ for i in range(30, len(df)-1):
         if high > highest:
             highest = high
 
-        # trailing فعال بعد از سود
-        if highest > entry * 1.01:
-            trail = highest - atr * 0.7
+        # trailing پله‌ای
+        if highest > entry * 1.02:
+            trail = highest - atr * 0.8
+        elif highest > entry * 1.01:
+            trail = highest - atr * 1.0
         else:
             trail = sl
 
+        # خروج‌ها
         if low <= sl:
             exit_price = sl
             break
@@ -160,7 +148,6 @@ for i in range(30, len(df)-1):
 
         exit_price = df["Close"].iloc[j]
 
-    # RESULT
     pnl = (exit_price - entry) / entry
     net = (1 + pnl) * (1 - fee)**2 - 1
 
