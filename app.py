@@ -4,108 +4,79 @@ import numpy as np
 import requests
 from datetime import date
 
-st.set_page_config(layout="wide", page_title="BTC SUPER WHALE PRO")
-st.title("🐋 BTC PRO: Super Whale Mode (REAL FINAL)")
+st.set_page_config(layout="wide", page_title="BTC WHALE PRO V16")
+st.title("🐋 BTC PRO: Whale Mode (V16 - Ultra Growth)")
 
 # ======================
 # DATA (MULTI-ENDPOINT SAFE)
 # ======================
 @st.cache_data(ttl=3600)
 def get_data(start_str="2023-01-01"):
-
     endpoints = [
-        "https://data-api.binance.vision/api/v3/klines",
         "https://api1.binance.com/api/v3/klines",
-        "https://api2.binance.com/api/v3/klines"
+        "https://api2.binance.com/api/v3/klines",
+        "https://data-api.binance.vision/api/v3/klines"
     ]
-
     start_ts = int(pd.Timestamp(start_str).timestamp() * 1000)
 
     for url in endpoints:
         all_data = []
         current_ts = start_ts
-
         try:
             while True:
-                params = {
-                    "symbol": "BTCUSDT",
-                    "interval": "1h",
-                    "startTime": current_ts,
-                    "limit": 1000
-                }
-
+                params = {"symbol": "BTCUSDT", "interval": "1h", "startTime": current_ts, "limit": 1000}
                 res = requests.get(url, params=params, timeout=15)
-
-                if res.status_code != 200:
-                    break
-
+                if res.status_code != 200: break
                 data = res.json()
-
-                if not isinstance(data, list) or not data:
-                    break
-
+                if not isinstance(data, list) or not data: break
                 all_data.extend(data)
                 current_ts = data[-1][0] + 1
+                if len(data) < 1000: break
+            if all_data: break
+        except: continue
 
-                if len(data) < 1000:
-                    break
-
-            if all_data:
-                break
-
-        except:
-            continue
-
-    if not all_data:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(all_data)
-    df = df.iloc[:, :5]
+    if not all_data: return pd.DataFrame()
+    df = pd.DataFrame(all_data).iloc[:, :5]
     df.columns = ["Time", "Open", "High", "Low", "Close"]
-
     df["Time"] = pd.to_datetime(df["Time"], unit="ms")
     df.set_index("Time", inplace=True)
-
     return df.astype(float)
 
 # ======================
 # SIDEBAR
 # ======================
 with st.sidebar:
-    st.header("⚙️ Settings")
+    st.header("⚙️ تنظیمات بک‌تست")
     start_dt = st.date_input("Start Date", value=date(2023,1,1))
     end_dt = st.date_input("End Date", value=date.today())
-
     st.divider()
-    capital = st.number_input("Capital ($)", value=1000.0)
+    capital = st.number_input("سرمایه اولیه ($)", value=1000.0)
     fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
+    st.warning("توجه: این استراتژی برای شکار روندهای بزرگ (Trend Following) است.")
 
 # ======================
-# LOAD DATA
+# LOAD & PROCESS
 # ======================
-with st.spinner("Loading BTC data..."):
+with st.spinner("در حال دریافت دیتای زنده بایننس..."):
     df_raw = get_data("2023-01-01")
 
 if df_raw.empty:
-    st.error("❌ Data load failed")
+    st.error("❌ دیتایی دریافت نشد!")
     st.stop()
 
-# ======================
-# INDICATORS
-# ======================
 df = df_raw.copy()
-
 df["MA50"] = df["Close"].rolling(50).mean()
 df["MA200"] = df["Close"].rolling(200).mean()
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
 
+# RSI
 delta = df["Close"].diff()
 gain = (delta.where(delta > 0, 0)).rolling(14).mean()
 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
 df["RSI"] = 100 - (100 / (1 + (gain/loss)))
 
 # ======================
-# ENGINE (SUPER WHALE REAL)
+# ENGINE (SUPER WHALE V16)
 # ======================
 df["Action"] = "WAIT"
 df["PnL"] = 0.0
@@ -115,74 +86,40 @@ in_pos = False
 entry = sl = highest = 0
 
 for i in range(200, len(df)):
-
     t = df.index[i]
+    c, h, l = df["Close"].iloc[i], df["High"].iloc[i], df["Low"].iloc[i]
+    rsi, ma50, ma200, atr = df["RSI"].iloc[i], df["MA50"].iloc[i], df["MA200"].iloc[i], df["ATR"].iloc[i]
 
-    c = df["Close"].iloc[i]
-    h = df["High"].iloc[i]
-    l = df["Low"].iloc[i]
-
-    rsi = df["RSI"].iloc[i]
-    ma50 = df["MA50"].iloc[i]
-    ma200 = df["MA200"].iloc[i]
-    atr = df["ATR"].iloc[i]
-
-    # ======================
-    # ENTRY (فقط داخل بازه)
-    # ======================
+    # ENTRY
     if not in_pos and (start_dt <= t.date() <= end_dt):
-
-        if c > ma50 > ma200 and rsi > 50:
-
-            entry = c
-            sl = entry - (atr * 2.0)   # اصلاح شد
-            highest = entry
-            in_pos = True
-
+        # فیلتر قوی‌تر برای ورود (RSI > 55)
+        if c > ma50 > ma200 and rsi > 55:
+            entry, highest, in_pos = c, c, True
+            sl = entry - (atr * 3.0) # استاپ عریض‌تر برای بقا در نوسان
             df.iloc[i, df.columns.get_loc("Action")] = "BUY"
 
-    # ======================
-    # HOLD (همیشه اجرا)
-    # ======================
+    # HOLD & EXIT
     elif in_pos:
-
         df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
+        highest = max(highest, h)
 
-        if h > highest:
-            highest = h
+        # Trailing Stop پله‌ای
+        if highest > entry * 1.05: sl = max(sl, entry) # Risk free
+        if highest > entry * 1.15: sl = max(sl, highest * 0.90) # Profit Lock 10%
+        if highest > entry * 1.30: sl = max(sl, highest * 0.85) # Profit Lock 15%
 
-        # 🔥 مرحله 1: risk free
-        if highest > entry * 1.05:
-            sl = max(sl, entry)
-
-        # 🔥 مرحله 2: profit lock
-        if highest > entry * 1.10:
-            sl = max(sl, highest * 0.92)
-
-        if highest > entry * 1.25:
-            sl = max(sl, highest * 0.88)
-
-        exit_price = 0
-
-        # فقط SL (حذف خروج MA200)
-        if l <= sl:
-            exit_price = sl
-
-        # ======================
-        # EXIT
-        # ======================
-        if exit_price > 0:
-
-            pnl = ((exit_price - entry) / entry) - (fee * 2)
-            balance *= (1 + pnl)
-
+        exit_p = 0
+        if l <= sl: exit_p = sl
+        
+        if exit_p > 0:
+            pnl_raw = ((exit_p - entry) / entry) - (fee * 2)
+            balance *= (1 + pnl_raw)
             df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
-            df.iloc[i, df.columns.get_loc("PnL")] = pnl * 100
-
+            df.iloc[i, df.columns.get_loc("PnL")] = pnl_raw * 100
             in_pos = False
 
 # ======================
-# DISPLAY
+# UI & METRICS
 # ======================
 df_display = df[(df.index.date >= start_dt) & (df.index.date <= end_dt)].copy()
 df_display["Date"] = df_display.index.date
@@ -193,35 +130,22 @@ daily = df_display.groupby("Date").agg({
     "PnL": "sum"
 })
 
-# ======================
-# METRICS
-# ======================
 net_profit = (balance - 1) * 100
+c1, c2, c3 = st.columns(3)
+c1.metric("Net Profit %", f"{net_profit:.2f}%")
+c2.metric("Final Balance", f"${capital * balance:,.2f}")
+c3.metric("Total Trades", len(df[df["Action"] == "EXIT"]))
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Net Profit %", f"{net_profit:.2f}%")
-col2.metric("Final Balance", f"${capital * balance:,.2f}")
-col3.metric("Trades", len(df[df["Action"] == "EXIT"]))
-
-# ======================
-# TABLE
-# ======================
 st.divider()
-st.subheader("📊 Trade Report")
+st.subheader("📊 Trade & Daily Report")
 
-def color(x):
-    colors = {
-        "BUY": "#2ecc71",
-        "EXIT": "#e74c3c",
-        "HOLD": "#3498db",
-        "WAIT": "#95a5a6"
-    }
-    return f"background-color:{colors.get(x,'white')};color:white"
+def color_action(val):
+    colors = {"BUY": "#2ecc71", "EXIT": "#e74c3c", "HOLD": "#3498db", "WAIT": "#95a5a6"}
+    return f"background-color: {colors.get(val, 'gray')}; color: white; font-weight: bold"
 
 st.dataframe(
     daily.sort_index(ascending=False)
-    .style.map(color, subset=["Action"])
+    .style.map(color_action, subset=["Action"])
     .format({"PnL": "{:+.2f}%", "Close": "{:,.1f}"}),
-    use_container_width=True,
-    height=600
+    use_container_width=True, height=600
 )
