@@ -4,11 +4,11 @@ import numpy as np
 import requests
 from datetime import date
 
-st.set_page_config(layout="wide", page_title="BTC WHALE ENGINE")
-st.title("🐋 BTC PRO: Whale Mode (Trend Follower)")
+st.set_page_config(layout="wide", page_title="BTC WHALE PRO V14")
+st.title("🐋 BTC PRO: Whale Mode (Fixed Engine)")
 
 # ======================
-# DATA (FULL HISTORY)
+# DATA (FULL HISTORY) - Fixed ValueError
 # ======================
 @st.cache_data(ttl=3600)
 def get_data(start_str="2023-01-01"):
@@ -16,40 +16,46 @@ def get_data(start_str="2023-01-01"):
     start_ts = int(pd.Timestamp(start_str).timestamp() * 1000)
     all_data = []
     
-    msg = st.empty()
-    msg.info("⏳ در حال فراخوانی تاریخچه کامل از بایننس...")
-    
+    # برای جلوگیری از خطا، عملیات سنگین را بدون UI داخلی انجام می‌دهیم
     while True:
         params = {"symbol": "BTCUSDT", "interval": "1h", "startTime": start_ts, "limit": 1000}
         try:
-            res = requests.get(url, params=params, timeout=10)
+            res = requests.get(url, params=params, timeout=15)
             data = res.json()
-            if not data: break
+            if not data or len(data) == 0: break
             all_data.extend(data)
             start_ts = data[-1][0] + 1
             if len(data) < 1000: break
         except: break
 
-    df = pd.DataFrame(all_data, columns=["time","open","high","low","close","volume","ct","qav","trades","tb","tq","ig"])
-    df["time"] = pd.to_datetime(df["time"], unit="ms")
-    df = df[["time","open","high","low","close"]]
-    df.columns = ["Time","Open","High","Low","Close"]
+    if not all_data:
+        return pd.DataFrame()
+
+    # تبدیل به دیتافریم بدون اجبار به تعداد ستون خاص (رفع خطای اصلی)
+    df = pd.DataFrame(all_data)
+    
+    # ما فقط به 5 ستون اول نیاز داریم: Time, Open, High, Low, Close
+    df = df.iloc[:, :5] 
+    df.columns = ["Time", "Open", "High", "Low", "Close"]
+    
+    df["Time"] = pd.to_datetime(df["Time"], unit="ms")
     df.set_index("Time", inplace=True)
-    msg.success(f"✅ {len(df)} کندل بارگذاری شد.")
     return df.astype(float)
 
 # ======================
 # SIDEBAR
 # ======================
 with st.sidebar:
-    st.header("⚙️ تنظیمات بک‌تست")
-    start_dt = st.date_input("شروع", value=date(2023,1,1))
-    end_dt = st.date_input("پایان", value=date(2026,5,2))
+    st.header("⚙️ Settings")
+    start_dt = st.date_input("Start Date", value=date(2023,1,1))
+    end_dt = st.date_input("End Date", value=date(2026,5,2))
     st.divider()
-    capital = st.number_input("سرمایه ($)", value=1000.0)
-    fee = st.slider("کارمزد (%)", 0.0, 0.5, 0.05) / 100
+    capital = st.number_input("Capital ($)", value=1000.0)
+    fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
 
-df_raw = get_data("2023-01-01")
+# بارگذاری دیتا با مدیریت نمایش
+with st.spinner("در حال دریافت دیتای کامل (ممکن است چند ثانیه طول بکشد)..."):
+    df_raw = get_data("2023-01-01")
 
 if not df_raw.empty:
     # ======================
@@ -82,40 +88,31 @@ if not df_raw.empty:
         rsi, ma50, ma200, atr = df["RSI"].iloc[i], df["MA50"].iloc[i], df["MA200"].iloc[i], df["ATR"].iloc[i]
 
         if not in_pos:
-            # ورود در ابتدای روندهای قوی
             if c > ma50 > ma200 and 52 < rsi < 65:
-                entry = c
-                sl = entry - (atr * 3.0) # استاپ‌لاس عریض برای حفظ معامله
-                highest = entry
+                entry, highest = c, c
+                sl = entry - (atr * 3.0) 
                 in_pos = True
                 df.iloc[i, df.columns.get_loc("Action")] = "BUY"
         else:
             df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
             highest = max(highest, h)
 
-            # ریسک‌فری: وقتی قیمت ۳٪ رشد کرد
-            if highest > entry * 1.03:
-                sl = max(sl, entry)
+            if highest > entry * 1.03: sl = max(sl, entry)
+            if highest > entry * 1.10: sl = max(sl, highest * 0.94)
 
-            # تریلینگ استاپ برای سودهای بزرگ: وقتی ۱۰٪ در سود هستیم
-            if highest > entry * 1.10:
-                sl = max(sl, highest * 0.94) # فاصله ۶ درصدی برای اجازه به نوسان
+            exit_p = 0
+            if l <= sl: exit_p = sl
+            elif c < ma50 and rsi < 45: exit_p = c
 
-            exit_price = 0
-            if l <= sl:
-                exit_price = sl
-            elif c < ma50 and rsi < 45: # خروج اضطراری در صورت چرخش روند
-                exit_price = c
-
-            if exit_price > 0:
-                pnl = ((exit_price - entry) / entry) - (fee * 2)
+            if exit_p > 0:
+                pnl = ((exit_p - entry) / entry) - (fee * 2)
                 balance *= (1 + pnl)
                 df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
                 df.iloc[i, df.columns.get_loc("PnL")] = pnl * 100
                 in_pos = False
 
     # ======================
-    # FINAL DISPLAY
+    # RESULTS
     # ======================
     df_display = df[(df.index.date >= start_dt) & (df.index.date <= end_dt)].copy()
     df_display["Date"] = df_display.index.date
@@ -126,22 +123,19 @@ if not df_raw.empty:
         "PnL": "sum"
     })
 
-    net_profit = (balance - 1) * 100
-    c1, c2 = st.columns(2)
-    c1.metric("Net Profit %", f"{net_profit:.2f}%", delta=f"{net_profit - (-3.12):.2f}% vs Last Run")
-    c2.metric("Final Balance", f"${capital * balance:,.2f}")
-
-    st.divider()
-    st.subheader(f"📊 وضعیت روزانه از {start_dt}")
+    net_prof = (balance - 1) * 100
+    st.columns(2)[0].metric("Net Profit %", f"{net_prof:.2f}%")
+    st.columns(2)[1].metric("Final Balance", f"${capital * balance:,.2f}")
 
     def color_act(val):
-        colors = {"BUY": "#2ecc71", "EXIT": "#e74c3c", "HOLD": "#3498db", "WAIT": "#95a5a6"}
-        return f"background-color: {colors.get(val, 'gray')}; color: white; font-weight: bold"
+        colors = {"BUY": "#2ecc71", "EXIT": "#e74c3c", "HOLD": "#3498db"}
+        return f"background-color: {colors.get(val, '#95a5a6')}; color: white; font-weight: bold"
 
     st.dataframe(
         daily.sort_index(ascending=False)
         .style.map(color_act, subset=["Action"])
         .format({"PnL": "{:+.2f}%", "Close": "{:,.1f}"}),
-        use_container_width=True,
-        height=600
+        use_container_width=True
     )
+else:
+    st.error("دیتا دریافت نشد. اینترنت را چک کنید.")
