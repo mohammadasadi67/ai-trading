@@ -1,100 +1,95 @@
 import requests
 import pandas as pd
 import numpy as np
-from itertools import product
-from datetime import datetime, timedelta
 
 # ======================
-# 1) DATA (BINANCE)
+# DATA (SAFE VERSION)
 # ======================
-def get_binance_klines(symbol="BTCUSDT", interval="4h", start_str="2023-01-01", limit=1000):
+def get_binance_klines(symbol="BTCUSDT", interval="4h", start_str="2024-01-01", max_loops=30):
     url = "https://data-api.binance.vision/api/v3/klines"
     start_ts = int(pd.Timestamp(start_str).timestamp() * 1000)
 
     all_rows = []
-    while True:
+    last_time = None
+
+    for _ in range(max_loops):
+
         params = {
             "symbol": symbol,
             "interval": interval,
             "startTime": start_ts,
-            "limit": limit
+            "limit": 1000
         }
+
         data = requests.get(url, params=params).json()
+
         if not data:
             break
 
-        all_rows.extend(data)
+        if last_time == data[-1][0]:
+            break
+
         last_time = data[-1][0]
+        all_rows.extend(data)
         start_ts = last_time + 1
 
-        # توقف اگر کمتر از limit برگشت
-        if len(data) < limit:
+        if len(data) < 1000:
             break
 
     df = pd.DataFrame(all_rows, columns=[
         "time","open","high","low","close","volume",
         "ct","qav","trades","tb","tq","ig"
     ])
+
     df["time"] = pd.to_datetime(df["time"], unit="ms")
     df = df[["time","open","high","low","close"]]
     df.columns = ["Time","Open","High","Low","Close"]
     df.set_index("Time", inplace=True)
+
     return df.astype(float)
 
 # ======================
-# 2) INDICATORS
+# INDICATORS
 # ======================
-def add_indicators(df, ema_fast, ema_slow, atr_len, adx_len):
-    out = df.copy()
-    out["EMA_FAST"] = out["Close"].ewm(span=ema_fast).mean()
-    out["EMA_SLOW"] = out["Close"].ewm(span=ema_slow).mean()
+def add_indicators(df, ema_f, ema_s):
+    df = df.copy()
+    df["EMA_F"] = df["Close"].ewm(span=ema_f).mean()
+    df["EMA_S"] = df["Close"].ewm(span=ema_s).mean()
 
-    # ATR
-    tr = np.maximum(out["High"] - out["Low"],
-        np.maximum(abs(out["High"] - out["Close"].shift()),
-                   abs(out["Low"] - out["Close"].shift())))
-    out["ATR"] = pd.Series(tr, index=out.index).rolling(atr_len).mean()
+    tr = np.maximum(df["High"] - df["Low"],
+        np.maximum(abs(df["High"] - df["Close"].shift()),
+                   abs(df["Low"] - df["Close"].shift())))
 
-    # ADX (ساده)
-    up = out["High"].diff()
-    down = -out["Low"].diff()
-    plus_dm = np.where((up > down) & (up > 0), up, 0)
-    minus_dm = np.where((down > up) & (down > 0), down, 0)
-
-    atr = pd.Series(tr, index=out.index).rolling(adx_len).mean()
-    plus_di = 100 * (pd.Series(plus_dm, index=out.index).rolling(adx_len).mean() / atr)
-    minus_di = 100 * (pd.Series(minus_dm, index=out.index).rolling(adx_len).mean() / atr)
-
-    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-    out["ADX"] = dx.rolling(adx_len).mean()
-
-    return out
+    df["ATR"] = pd.Series(tr).rolling(14).mean()
+    return df
 
 # ======================
-# 3) BACKTEST (POSITION-BASED)
+# BACKTEST
 # ======================
-def backtest(df, fee=0.001,
-             atr_mult_sl=1.2,
-             trail_pct=0.03,
-             adx_th=20):
+def backtest(df, atr_mult=1.0, trail=0.03):
 
     balance = 1.0
+    trades = wins = losses = 0
+
     in_pos = False
     entry = sl = highest = 0
-    trades = wins = losses = 0
-    equity_curve = []
 
-    for i in range(200, len(df)):
+    for i in range(50, len(df)):
+
         row = df.iloc[i]
-        close, high, low = row["Close"], row["High"], row["Low"]
-        ema_f, ema_s = row["EMA_FAST"], row["EMA_SLOW"]
-        atr, adx = row["ATR"], row["ADX"]
+        close = row["Close"]
+        high = row["High"]
+        low = row["Low"]
+
+        ema_f = row["EMA_F"]
+        ema_s = row["EMA_S"]
+        atr = row["ATR"]
 
         # ENTRY
         if not in_pos:
-            if close > ema_f > ema_s and adx > adx_th:
+            if close > ema_f > ema_s:
                 entry = close
-                sl = entry - atr * atr_mult_sl
+                sl = entry - atr * atr_mult
                 highest = entry
                 in_pos = True
 
@@ -103,101 +98,76 @@ def backtest(df, fee=0.001,
             if high > highest:
                 highest = high
 
-            # trailing after small profit
             if highest > entry * 1.02:
-                sl = max(sl, highest * (1 - trail_pct))
+                sl = max(sl, highest * (1 - trail))
 
-            exit_price = None
             if low <= sl:
-                exit_price = sl
+                pnl = (sl - entry) / entry
 
-            if exit_price is not None:
-                pnl = (exit_price - entry) / entry
-                net = (1 + pnl) * (1 - fee)**2 - 1
-
-                balance *= (1 + net)
+                balance *= (1 + pnl)
                 trades += 1
-                if net > 0:
+
+                if pnl > 0:
                     wins += 1
                 else:
                     losses += 1
 
                 in_pos = False
 
-        equity_curve.append(balance)
-
-    # metrics
     winrate = (wins / trades * 100) if trades else 0
     profit = (balance - 1) * 100
 
-    # max drawdown
-    ec = pd.Series(equity_curve)
-    peak = ec.cummax()
-    dd = (ec - peak) / peak
-    max_dd = dd.min() * 100
-
-    return {
-        "profit": profit,
-        "winrate": winrate,
-        "trades": trades,
-        "max_dd": max_dd
-    }
+    return profit, winrate, trades
 
 # ======================
-# 4) GRID SEARCH
+# OPTIMIZE (FAST)
 # ======================
 def optimize(df):
-    ema_fast_list = [20, 30, 50]
-    ema_slow_list = [100, 150, 200]
-    atr_mult_list = [0.8, 1.0, 1.2]
-    trail_list = [0.02, 0.03, 0.04]
-    adx_list = [18, 20, 25]
+
+    ema_fast = [20, 50]
+    ema_slow = [100, 200]
+    atr_mult = [0.8, 1.2]
+    trail = [0.02, 0.03]
 
     results = []
 
-    for ema_f, ema_s, atr_m, tr, adx_th in product(
-        ema_fast_list, ema_slow_list, atr_mult_list, trail_list, adx_list
-    ):
-        if ema_f >= ema_s:
-            continue
+    for ef in ema_fast:
+        for es in ema_slow:
+            if ef >= es:
+                continue
 
-        df_ind = add_indicators(df, ema_f, ema_s, 14, 14)
+            df_ind = add_indicators(df, ef, es)
 
-        res = backtest(df_ind,
-                       atr_mult_sl=atr_m,
-                       trail_pct=tr,
-                       adx_th=adx_th)
+            for am in atr_mult:
+                for tr in trail:
 
-        res.update({
-            "ema_f": ema_f,
-            "ema_s": ema_s,
-            "atr_mult": atr_m,
-            "trail": tr,
-            "adx": adx_th
-        })
+                    profit, winrate, trades = backtest(df_ind, am, tr)
 
-        results.append(res)
+                    results.append({
+                        "profit": profit,
+                        "winrate": winrate,
+                        "trades": trades,
+                        "ema_f": ef,
+                        "ema_s": es,
+                        "atr": am,
+                        "trail": tr
+                    })
 
-    results_df = pd.DataFrame(results)
+    res = pd.DataFrame(results)
+    res = res.sort_values("profit", ascending=False)
 
-    # فیلتر: دراودان منطقی + حداقل ترید
-    results_df = results_df[
-        (results_df["max_dd"] > -40) &
-        (results_df["trades"] >= 10)
-    ]
-
-    # رتبه‌بندی: سود بالا + دراودان کمتر
-    results_df["score"] = results_df["profit"] + results_df["max_dd"] * 0.5
-
-    best = results_df.sort_values("score", ascending=False).head(10)
-    return best
+    return res
 
 # ======================
 # RUN
 # ======================
-if __name__ == "__main__":
-    df = get_binance_klines(start_str="2023-01-01")
-    best = optimize(df)
+print("Loading data...")
+df = get_binance_klines()
 
-    print("\n=== TOP STRATEGIES ===")
-    print(best.to_string(index=False))
+print("Data size:", len(df))
+
+print("Optimizing...")
+result = optimize(df)
+
+print("\n=== TOP RESULTS ===")
+print(result.head(10))
