@@ -76,18 +76,27 @@ for i in range(50, len(df)):
     atr = df["ATR"].iloc[i]
 
     # ======================
-    # ENTRY (بهبود یافته)
-    # ======================
-    if not in_pos:
-        breakout = close > df["High"].iloc[i-10:i].max()
+ # ======================
+# ENTRY (Pullback حرفه‌ای)
+# ======================
+if not in_pos:
 
-        if close > ema20 > ema50 and breakout:
-            entry = close
-            sl = entry - atr * 0.8
-            highest = entry
-            in_pos = True
-            df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
+    trend = ema20 > ema50
 
+    # اصلاح به EMA20
+    pullback = close < ema20 and close > ema50
+
+    # برگشت از اصلاح
+    bounce = close > df["Close"].iloc[i-1]
+
+    if trend and pullback and bounce:
+
+        entry = close
+        sl = entry - atr * 0.7
+        highest = entry
+        in_pos = True
+
+        df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
     # ======================
     # HOLD
     # ======================
@@ -98,8 +107,8 @@ for i in range(50, len(df)):
             highest = high
 
         # trailing
-        if highest > entry * 1.02:
-            sl = max(sl, highest * 0.97)
+        if highest > entry * 1.03:
+            sl = max(sl, highest * 0.96)
 
         exit_price = None
 
