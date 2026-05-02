@@ -4,8 +4,8 @@ import numpy as np
 import requests
 from datetime import date
 
-st.set_page_config(layout="wide", page_title="BTC PRO SPOT V10")
-st.title("🛡️ BTC PRO TREND-MASTER (V10)")
+st.set_page_config(layout="wide", page_title="BTC PRO SPOT V11")
+st.title("🛡️ BTC PRO TREND-MASTER (V11)")
 
 # ======================
 # DATA FETCHING
@@ -30,20 +30,21 @@ def get_data(limit=1500):
 # SETTINGS
 # ======================
 with st.sidebar:
-    st.header("Settings")
+    st.header("تنظیمات")
     capital = st.number_input("Capital ($)", value=1000.0)
     fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
-    start_date = st.date_input("Start Date", value=date(2023, 1, 1))
+    # تاریخ شروع فیلتر
+    start_dt = st.date_input("Start Date", value=date(2023, 1, 1))
 
-df_hourly = get_data()
-if df_hourly.empty:
-    st.error("Connection Error")
+df_raw = get_data()
+if df_raw.empty:
+    st.error("خطا در دریافت دیتا")
     st.stop()
 
 # ======================
 # INDICATORS
 # ======================
-df = df_hourly.copy()
+df = df_raw.copy()
 df["MA50"] = df["Close"].rolling(50).mean()
 df["MA200"] = df["Close"].rolling(200).mean()
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
@@ -54,7 +55,7 @@ loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
 df["RSI"] = 100 - (100 / (1 + (gain/loss)))
 
 # ======================
-# ENGINE (PRO TREND MODE - OPTIMIZED)
+# ENGINE (PRO TREND MODE)
 # ======================
 df["Action"] = "WAIT"
 df["PnL_Trade"] = 0.0
@@ -65,7 +66,13 @@ entry_val = 0
 sl_val = 0
 highest = 0
 
+# شروع محاسبات دقیقاً از تاریخی که کاربر انتخاب کرده
+# برای دقت اندیکاتورها، از ایندکس 200 شروع می‌کنیم اما فقط بعد از start_dt ذخیره می‌کنیم
 for i in range(200, len(df)):
+    # چک کردن تاریخ هر کندل
+    if df.index[i].date() < start_dt:
+        continue
+
     c = df["Close"].iloc[i]
     h = df["High"].iloc[i]
     l = df["Low"].iloc[i]
@@ -75,11 +82,10 @@ for i in range(200, len(df)):
     atr = df["ATR"].iloc[i]
 
     if not in_pos:
-        # ورود: روند صعودی تثبیت شده + مومنتوم مثبت
         if c > ma50 > ma200 and 55 < rsi < 70:
             in_pos = True
             entry_val = c
-            sl_val = entry_val - (atr * 1.2) # استاپ لاس طبق انجین شما
+            sl_val = entry_val - (atr * 1.2)
             highest = entry_val
             df.iloc[i, df.columns.get_loc("Action")] = "BUY"
     else:
@@ -87,7 +93,6 @@ for i in range(200, len(df)):
         if h > highest:
             highest = h
         
-        # Trailing واقعی طبق انجین شما
         if highest > entry_val * 1.03:
             sl_val = max(sl_val, highest * 0.96)
 
@@ -106,35 +111,38 @@ for i in range(200, len(df)):
 # DAILY AGGREGATION
 # ======================
 df['Date'] = df.index.date
-daily_df = df.groupby('Date').agg({
+# فقط ردیف‌هایی که از تاریخ شروع به بعد هستند را برای جدول نگه دار
+df_filtered = df[df.index.date >= start_dt].copy()
+
+daily_df = df_filtered.groupby('Date').agg({
     'Close': 'last',
     'Action': lambda x: 'BUY' if 'BUY' in x.values else ('EXIT' if 'EXIT' in x.values else ('HOLD' if 'HOLD' in x.values else 'WAIT')),
     'PnL_Trade': 'sum'
 })
-
-daily_df = daily_df[daily_df.index >= start_date]
 
 # ======================
 # METRICS & DISPLAY
 # ======================
 net_profit = (balance - 1) * 100
 c1, c2, c3 = st.columns(3)
-c1.metric("Net Profit %", f"{net_profit:.2f}%")
+c1.metric("Net Profit (از تاریخ انتخابی)", f"{net_profit:.2f}%")
 c2.metric("Final Balance", f"${capital * balance:,.2f}")
-c3.metric("Last Status", daily_df['Action'].iloc[-1])
+c3.metric("Last Status", daily_df['Action'].iloc[-1] if not daily_df.empty else "N/A")
 
 st.divider()
-st.subheader("🗓️ Daily Trade Log (Hourly Analysis)")
+st.subheader("🗓️ Daily Trade Log")
 
-# رفع خطای applymap با استفاده از map (نسخه‌های جدید پانداز)
 def style_action(val):
     colors = {'BUY': '#27ae60', 'EXIT': '#c0392b', 'HOLD': '#2980b9', 'WAIT': '#7f8c8d'}
     return f'background-color: {colors.get(val, "white")}; color: white; font-weight: bold'
 
-st.dataframe(
-    daily_df.sort_index(ascending=False)
-    .style.map(style_action, subset=['Action'])
-    .format({"PnL_Trade": "{:+.2f}%", "Close": "{:,.1f}"}),
-    use_container_width=True,
-    height=600
-)
+if not daily_df.empty:
+    st.dataframe(
+        daily_df.sort_index(ascending=False)
+        .style.map(style_action, subset=['Action'])
+        .format({"PnL_Trade": "{:+.2f}%", "Close": "{:,.1f}"}),
+        use_container_width=True,
+        height=600
+    )
+else:
+    st.warning("در این بازه زمانی دیتایی وجود ندارد.")
