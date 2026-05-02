@@ -2,15 +2,15 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-from datetime import datetime, timedelta, date
+from datetime import date
 
-st.set_page_config(layout="wide", page_title="Professional Trading Dashboard")
-st.title("mohammad pattern - EDGE MODE")
+st.set_page_config(layout="wide")
+st.title("SPOT SWING SYSTEM (HOLD MODE)")
 
 # ======================
 # DATA
 # ======================
-def get_live_data():
+def get_data():
     url = "https://data-api.binance.vision/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 500}
     data = requests.get(url, params=params).json()
@@ -28,173 +28,146 @@ def get_live_data():
     return df.astype(float)
 
 # ======================
-# SUPPORT / RESISTANCE
+# INPUT
 # ======================
-def get_sr_levels(df):
-    highs = df["High"].rolling(50).max()
-    lows = df["Low"].rolling(50).min()
-    return lows.iloc[-1], highs.iloc[-1]
-
-# ======================
-# INPUTS
-# ======================
-initial_capital = st.sidebar.number_input("Capital", value=1000.0)
-fee_rate = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
+capital = st.sidebar.number_input("Capital", value=1000.0)
+fee = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
 start_date = st.sidebar.date_input("Start", value=date(2024,1,1))
 
-# ======================
-# LOAD
-# ======================
-df = get_live_data()
+df = get_data()
 df = df[df.index.date >= start_date].copy()
 
-if not df.empty:
+# ======================
+# INDICATORS
+# ======================
+ma = df["Close"].rolling(20).mean()
+atr = (df["High"] - df["Low"]).rolling(14).mean()
 
-    df["Signal"] = "WAIT"
-    df["Entry"] = np.nan
-    df["Target"] = np.nan
-    df["StopLoss"] = np.nan
-    df["Confidence"] = 0.0
-    df["PnL_Percent"] = np.nan
+# ======================
+# VARIABLES
+# ======================
+balance = 1.0
+trades = 0
+wins = 0
+losses = 0
+total_profit = 0
+total_loss = 0
 
-    balance = 1.0
-    trades = 0
-    wins = 0
-    losses = 0
-    total_profit = 0
-    total_loss = 0
+max_hold = 20  # 🔥 نگه‌داری بیشتر (اسپات)
+trail_active = False
 
-    max_hold = 12
-    scale_trigger = 0.004
+df["Signal"] = "WAIT"
+df["PnL"] = np.nan
 
-    ma = df["Close"].rolling(20).mean()
-    atr = (df["High"] - df["Low"]).rolling(14).mean()
+# ======================
+# STRATEGY
+# ======================
+for i in range(20, len(df)-max_hold):
 
-    for i in range(20, len(df)-max_hold):
+    p1 = df.iloc[i-1]
+    p2 = df.iloc[i-2]
 
-        p1 = df.iloc[i-1]
-        p2 = df.iloc[i-2]
+    move = (p1["Close"] - p2["Close"]) / p2["Close"]
 
-        # ======================
-        # جهت حرکت (trend momentum)
-        # ======================
-        move = (p1["Close"] - p2["Close"]) / p2["Close"]
+    # فقط حرکت مثبت
+    if move < 0.001:
+        continue
 
-        if move < 0.001:
-            continue
+    # روند
+    if df["Close"].iloc[i-1] < ma.iloc[i-1]:
+        continue
 
-        # ======================
-        # فیلتر روند
-        # ======================
-        if df["Close"].iloc[i-1] < ma.iloc[i-1]:
-            continue
+    # ولتیلیتی
+    vol = atr.iloc[i] / df["Close"].iloc[i]
+    if vol < 0.003:
+        continue
 
-        # ======================
-        # فیلتر بازار رنج
-        # ======================
-        volatility = atr.iloc[i] / df["Close"].iloc[i]
-        if volatility < 0.003:
-            continue
+    entry = df["Open"].iloc[i]
 
-        entry = df["Open"].iloc[i]
+    # 🔥 breakout واقعی
+    recent_high = df["High"].iloc[i-5:i].max()
+    if entry <= recent_high:
+        continue
 
-        # ======================
-        # SL / TP حرفه‌ای
-        # ======================
-        sl = entry - (move * entry * 0.8)
-        tp = entry + (move * entry * 1.2)
+    # SL و TP
+    sl = min(p1["Low"], entry * (1 - 0.01))
+    tp = entry * 1.02  # حداقل 2%
 
-        # ======================
-        # فیلتر ورود (حداقل 1%)
-        # ======================
-        predicted_profit = (tp - entry) / entry
-        if predicted_profit < 0.01:
-            continue
+    # فیلتر ورود
+    if (tp - entry) / entry < 0.01:
+        continue
 
-        avg_entry = entry
-        scaled = False
-        exit_price = entry
-
-        for j in range(1, max_hold+1):
-
-            high = df["High"].iloc[i+j]
-            low = df["Low"].iloc[i+j]
-
-            # SCALE IN
-            if (not scaled) and (low < entry * (1 - scale_trigger)):
-                add_price = entry * (1 - scale_trigger)
-                avg_entry = (avg_entry + add_price) / 2
-                scaled = True
-
-            if low <= sl:
-                exit_price = sl
-                break
-
-            if high >= tp:
-                exit_price = tp
-                break
-
-            exit_price = df["Close"].iloc[i+j]
-
-        raw = (exit_price - avg_entry) / avg_entry
-        net = (1 + raw) * (1 - fee_rate)**2 - 1
-
-        # ======================
-        # ثبت واقعی
-        # ======================
-        trades += 1
-        balance *= (1 + net)
-
-        if net > 0:
-            wins += 1
-            total_profit += net
-        else:
-            losses += 1
-            total_loss += abs(net)
-
-        df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
-        df.iloc[i, df.columns.get_loc("Entry")] = avg_entry
-        df.iloc[i, df.columns.get_loc("Target")] = tp
-        df.iloc[i, df.columns.get_loc("StopLoss")] = sl
-        df.iloc[i, df.columns.get_loc("PnL_Percent")] = net * 100
-
-        # confidence
-        rr = (tp - avg_entry) / max((avg_entry - sl), 1e-6)
-        conf = (move * 50 + rr) / 2
-        conf = conf / (1 + conf)
-
-        df.iloc[i, df.columns.get_loc("Confidence")] = max(0, min(conf, 1))
+    exit_price = entry
+    highest = entry
 
     # ======================
-    # METRICS
+    # HOLD LOOP
     # ======================
-    price = df["Close"].iloc[-1]
-    support, resistance = get_sr_levels(df)
+    for j in range(1, max_hold+1):
 
-    final_balance = initial_capital * balance
-    winrate = (wins / trades * 100) if trades else 0
-    net_profit_percent = (balance - 1) * 100
+        high = df["High"].iloc[i+j]
+        low = df["Low"].iloc[i+j]
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("BTC Price", f"${price:,.2f}")
-    c2.metric("Support", f"${support:,.2f}")
-    c3.metric("Resistance", f"${resistance:,.2f}")
+        # ثبت بیشترین قیمت
+        if high > highest:
+            highest = high
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Trades", trades)
-    m2.metric("Winrate", f"{winrate:.2f}%")
-    m3.metric("Wins / Losses", f"{wins} / {losses}")
-    m4.metric("Net Profit %", f"{net_profit_percent:.2f}%")
+        # 🔥 TRAILING STOP
+        trail_sl = highest * 0.98  # 2% trailing
 
-    m5, m6, m7 = st.columns(3)
-    m5.metric("Total Profit %", f"{total_profit*100:.2f}%")
-    m6.metric("Total Loss %", f"{total_loss*100:.2f}%")
-    m7.metric("Balance", f"${final_balance:,.2f}")
+        # SL
+        if low <= sl:
+            exit_price = sl
+            break
 
-    st.divider()
+        # trailing
+        if low <= trail_sl:
+            exit_price = trail_sl
+            break
 
-    st.subheader("All Trades (Real)")
-    st.dataframe(df.sort_index(ascending=False), use_container_width=True, height=600)
+        # TP اولیه (فقط فعال‌کننده trailing)
+        if high >= tp:
+            trail_active = True
 
-# AUTO REFRESH
-st.markdown("<script>setTimeout(()=>window.location.reload(),20000)</script>", unsafe_allow_html=True)
+        exit_price = df["Close"].iloc[i+j]
+
+    # ======================
+    # RESULT
+    # ======================
+    raw = (exit_price - entry) / entry
+    net = (1 + raw) * (1 - fee)**2 - 1
+
+    trades += 1
+    balance *= (1 + net)
+
+    if net > 0:
+        wins += 1
+        total_profit += net
+    else:
+        losses += 1
+        total_loss += abs(net)
+
+    df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
+    df.iloc[i, df.columns.get_loc("PnL")] = net * 100
+
+# ======================
+# METRICS
+# ======================
+final_balance = capital * balance
+winrate = (wins / trades * 100) if trades else 0
+net_profit = (balance - 1) * 100
+
+c1, c2, c3 = st.columns(3)
+c1.metric("Trades", trades)
+c2.metric("Winrate", f"{winrate:.2f}%")
+c3.metric("Net Profit %", f"{net_profit:.2f}%")
+
+c4, c5, c6 = st.columns(3)
+c4.metric("Wins / Losses", f"{wins} / {losses}")
+c5.metric("Total Profit %", f"{total_profit*100:.2f}%")
+c6.metric("Total Loss %", f"{total_loss*100:.2f}%")
+
+st.metric("Balance", f"${final_balance:,.2f}")
+
+st.divider()
+st.dataframe(df.sort_index(ascending=False), use_container_width=True, height=600)
