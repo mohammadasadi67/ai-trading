@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timedelta, date
 
 st.set_page_config(layout="wide", page_title="Professional Trading Dashboard")
-st.title("mohammad pattern")
+st.title("mohammad pattern - REAL ENTRY MODE")
 
 # ======================
 # DATA
@@ -28,34 +28,15 @@ def get_live_data():
     return df.astype(float)
 
 # ======================
-# SUPPORT / RESISTANCE (GLOBAL)
+# SUPPORT / RESISTANCE
 # ======================
 def get_sr_levels(df):
-    highs = df["High"].rolling(20).max()
-    lows = df["Low"].rolling(20).min()
-
-    resistance = highs.iloc[-1]
-    support = lows.iloc[-1]
-
-    return support, resistance
+    highs = df["High"].rolling(50).max()
+    lows = df["Low"].rolling(50).min()
+    return lows.iloc[-1], highs.iloc[-1]
 
 # ======================
-# TIME
-# ======================
-def get_time_remaining():
-    now = datetime.utcnow()
-    next_4h = (now.hour // 4 + 1) * 4
-
-    if next_4h >= 24:
-        target = datetime(now.year, now.month, now.day) + timedelta(days=1)
-    else:
-        target = datetime(now.year, now.month, now.day, next_4h)
-
-    remaining = target - now
-    return str(remaining).split(".")[0]
-
-# ======================
-# SIDEBAR
+# INPUTS
 # ======================
 initial_capital = st.sidebar.number_input("Capital", value=1000.0)
 fee_rate = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
@@ -74,7 +55,7 @@ if not df.empty:
     df["Target"] = np.nan
     df["StopLoss"] = np.nan
     df["Confidence"] = 0.0
-    df["PnL_Percent"] = 0.0
+    df["PnL_Percent"] = np.nan
 
     balance = 1.0
     trades = 0
@@ -83,8 +64,10 @@ if not df.empty:
     total_profit = 0
     total_loss = 0
 
-    max_hold = 8
+    max_hold = 12
     scale_trigger = 0.004
+
+    ma = df["Close"].rolling(20).mean()
 
     for i in range(20, len(df)-max_hold):
 
@@ -93,22 +76,25 @@ if not df.empty:
 
         move = abs((p1["Close"] - p2["Close"]) / p2["Close"])
 
-        if move < 0.0012:
+        if move < 0.0008:
             continue
 
-        # Trend filter
-        ma = df["Close"].rolling(20).mean()
         if df["Close"].iloc[i-1] < ma.iloc[i-1]:
             continue
 
         entry = df["Open"].iloc[i]
         sl = p1["Low"]
-        tp = entry + (move * entry * 1.8)
+        tp = entry + (move * entry * 1.4)
 
-        position_size = 1
+        # ======================
+        # ✅ ENTRY FILTER (>=1%)
+        # ======================
+        predicted_profit = (tp - entry) / entry
+        if predicted_profit < 0.01:
+            continue
+
         avg_entry = entry
         scaled = False
-
         exit_price = entry
 
         for j in range(1, max_hold+1):
@@ -121,7 +107,6 @@ if not df.empty:
                 add_price = entry * (1 - scale_trigger)
                 avg_entry = (avg_entry + add_price) / 2
                 scaled = True
-                position_size += 1
 
             if low <= sl:
                 exit_price = sl
@@ -136,10 +121,9 @@ if not df.empty:
         raw = (exit_price - avg_entry) / avg_entry
         net = (1 + raw) * (1 - fee_rate)**2 - 1
 
-        # فقط سود بالای 1%
-        if net < 0.01:
-            continue
-
+        # ======================
+        # ✅ REAL RECORD (NO FILTER)
+        # ======================
         trades += 1
         balance *= (1 + net)
 
@@ -156,6 +140,7 @@ if not df.empty:
         df.iloc[i, df.columns.get_loc("StopLoss")] = sl
         df.iloc[i, df.columns.get_loc("PnL_Percent")] = net * 100
 
+        # CONFIDENCE
         rr = (tp - avg_entry) / max((avg_entry - sl), 1e-6)
         conf = (move * 50 + rr) / 2
         conf = conf / (1 + conf)
@@ -169,7 +154,7 @@ if not df.empty:
     support, resistance = get_sr_levels(df)
 
     final_balance = initial_capital * balance
-    winrate = (wins / trades * 100) if trades > 0 else 0
+    winrate = (wins / trades * 100) if trades else 0
     net_profit_percent = (balance - 1) * 100
 
     c1, c2, c3 = st.columns(3)
@@ -190,7 +175,7 @@ if not df.empty:
 
     st.divider()
 
-    st.subheader("Trading Logs")
+    st.subheader("All Trades (Real Results)")
     st.dataframe(df.sort_index(ascending=False), use_container_width=True, height=600)
 
 # AUTO REFRESH
