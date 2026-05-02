@@ -4,19 +4,18 @@ import numpy as np
 import requests
 from datetime import date
 
-st.set_page_config(layout="wide", page_title="BTC SUPER WHALE PRO V21")
-st.title("🐋 BTC PRO: Whale Mode (Stable + Real Data)")
+st.set_page_config(layout="wide", page_title="BTC SMART WHALE V30")
+st.title("🐋 BTC SMART WHALE (Hourly Engine → Daily View)")
 
 # ======================
-# DATA ENGINE (MULTI SOURCE + LOOP)
+# DATA ENGINE (STABLE)
 # ======================
 @st.cache_data(ttl=600)
 def get_data(start_str="2023-01-01"):
 
     endpoints = [
         "https://data-api.binance.vision/api/v3/klines",
-        "https://api1.binance.com/api/v3/klines",
-        "https://api2.binance.com/api/v3/klines"
+        "https://api1.binance.com/api/v3/klines"
     ]
 
     start_ts = int(pd.Timestamp(start_str).timestamp() * 1000)
@@ -54,10 +53,8 @@ def get_data(start_str="2023-01-01"):
                 df = pd.DataFrame(all_data)
                 df = df.iloc[:, :5]
                 df.columns = ["Time", "Open", "High", "Low", "Close"]
-
                 df["Time"] = pd.to_datetime(df["Time"], unit="ms")
                 df.set_index("Time", inplace=True)
-
                 return df.astype(float)
 
         except:
@@ -73,7 +70,6 @@ with st.sidebar:
     start_dt = st.date_input("Start Date", value=date(2023,1,1))
     end_dt = st.date_input("End Date", value=date.today())
 
-    st.divider()
     capital = st.number_input("Capital ($)", value=1000.0)
     fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
 
@@ -96,83 +92,97 @@ df["H_48"] = df["High"].rolling(48).max().shift(1)
 df["L_48"] = df["Low"].rolling(48).min().shift(1)
 
 # ======================
-# FILTER RANGE
+# BACKTEST ENGINE (1H)
 # ======================
-df_bt = df[
-    (df.index.date >= start_dt) &
-    (df.index.date <= end_dt)
-].copy()
-
-# ======================
-# ENGINE (REAL WHALE LOGIC)
-# ======================
-df_bt["Action"] = "WAIT"
-df_bt["PnL"] = 0.0
+df["Action"] = "WAIT"
+df["Entry"] = 0.0
+df["SL"] = 0.0
+df["TP"] = 0.0
+df["PnL"] = 0.0
 
 balance = 1.0
 in_pos = False
-entry = sl = highest = 0
+entry = sl = tp = highest = 0
 
-for i in range(len(df_bt)):
+for i in range(200, len(df)):
 
-    c = df_bt["Close"].iloc[i]
-    h = df_bt["High"].iloc[i]
-    l = df_bt["Low"].iloc[i]
+    t = df.index[i]
+    if not (start_dt <= t.date() <= end_dt):
+        continue
 
-    ma200 = df_bt["MA200"].iloc[i]
-    h48 = df_bt["H_48"].iloc[i]
-    l48 = df_bt["L_48"].iloc[i]
+    c = df["Close"].iloc[i]
+    h = df["High"].iloc[i]
+    l = df["Low"].iloc[i]
+    ma200 = df["MA200"].iloc[i]
+    h48 = df["H_48"].iloc[i]
+    l48 = df["L_48"].iloc[i]
 
-    idx = df_bt.index[i]
+    idx = df.index[i]
 
-    # ======================
     # ENTRY
-    # ======================
     if not in_pos:
         if c > h48 and c > ma200:
-
             entry = c
             sl = l48
+            tp = entry * 1.05
             highest = entry
             in_pos = True
 
-            df_bt.at[idx, "Action"] = "BUY"
+            df.at[idx, "Action"] = "BUY"
+            df.at[idx, "Entry"] = entry
+            df.at[idx, "SL"] = sl
+            df.at[idx, "TP"] = tp
 
-    # ======================
     # HOLD
-    # ======================
     else:
-        df_bt.at[idx, "Action"] = "HOLD"
+        df.at[idx, "Action"] = "HOLD"
 
         if h > highest:
             highest = h
 
-        # trailing واقعی
+        # trailing
         sl = max(sl, l48)
+        tp = max(tp, highest * 1.03)
+
+        df.at[idx, "Entry"] = entry
+        df.at[idx, "SL"] = sl
+        df.at[idx, "TP"] = tp
 
         exit_price = 0
 
         if l <= sl:
             exit_price = sl
 
-        # ======================
-        # EXIT
-        # ======================
         if exit_price > 0:
-
             pnl = ((exit_price - entry) / entry) - (fee * 2)
             balance *= (1 + pnl)
 
-            df_bt.at[idx, "Action"] = "EXIT"
-            df_bt.at[idx, "PnL"] = pnl * 100
+            df.at[idx, "Action"] = "EXIT"
+            df.at[idx, "PnL"] = pnl * 100
 
             in_pos = False
 
 # ======================
-# RESULTS
+# DAILY VIEW
+# ======================
+df["Date"] = df.index.date
+
+daily = df.groupby("Date").agg({
+    "Close": "last",
+    "Action": lambda x: x.iloc[-1],
+    "Entry": "last",
+    "SL": "last",
+    "TP": "last",
+    "PnL": "sum"
+})
+
+daily = daily[(daily.index >= start_dt) & (daily.index <= end_dt)]
+
+# ======================
+# METRICS
 # ======================
 net_profit = (balance - 1) * 100
-trades = len(df_bt[df_bt["Action"] == "EXIT"])
+trades = len(df[df["Action"] == "EXIT"])
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Net Profit %", f"{net_profit:.2f}%")
@@ -183,20 +193,17 @@ c3.metric("Trades", trades)
 # TABLE
 # ======================
 st.divider()
-
-def style(x):
-    colors = {
-        "BUY": "#2ecc71",
-        "EXIT": "#e74c3c",
-        "HOLD": "#3498db",
-        "WAIT": "#95a5a6"
-    }
-    return f"background-color:{colors.get(x,'white')};color:white"
+st.subheader("📊 Daily Trade View (with Dynamic Levels)")
 
 st.dataframe(
-    df_bt[df_bt["Action"] != "WAIT"]
-    .sort_index(ascending=False)
-    .style.map(style, subset=["Action"])
-    .format({"PnL": "{:+.2f}%", "Close": "{:,.1f}"}),
-    use_container_width=True
+    daily.sort_index(ascending=False)
+    .style.format({
+        "Close": "{:,.1f}",
+        "Entry": "{:,.1f}",
+        "SL": "{:,.1f}",
+        "TP": "{:,.1f}",
+        "PnL": "{:+.2f}%"
+    }),
+    use_container_width=True,
+    height=600
 )
