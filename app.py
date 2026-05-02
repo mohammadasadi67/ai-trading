@@ -48,7 +48,6 @@ df["MA50"] = df["Close"].rolling(50).mean()
 df["MA200"] = df["Close"].rolling(200).mean()
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
 
-# RSI
 delta = df["Close"].diff()
 gain = (delta.where(delta > 0, 0)).rolling(14).mean()
 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -59,7 +58,6 @@ df["RSI"] = 100 - (100 / (1 + (gain/loss)))
 # ======================
 df["Action"] = "WAIT"
 df["PnL_Trade"] = 0.0
-df["Confidence"] = 0
 
 balance = 1.0
 in_pos = False
@@ -81,36 +79,28 @@ for i in range(200, len(df)):
         if c > ma50 > ma200 and 55 < rsi < 70:
             in_pos = True
             entry_val = c
-            sl_val = entry_val - (atr * 1.5) # استاپ لاس امن‌تر
+            sl_val = entry_val - (atr * 1.2) # استاپ لاس طبق انجین شما
             highest = entry_val
-            
-            conf = int(np.clip((rsi-50)*5 + 50, 0, 100))
             df.iloc[i, df.columns.get_loc("Action")] = "BUY"
-            df.iloc[i, df.columns.get_loc("Confidence")] = conf
     else:
-        # مدیریت پوزیشن
+        df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
         if h > highest:
             highest = h
         
-        # تریلینگ هوشمند: وقتی سود به ۲٪ رسید، استاپ را پله‌پله بالا ببر
-        if highest > entry_val * 1.02:
-            new_sl = highest - (atr * 2.0)
-            sl_val = max(sl_val, new_sl)
+        # Trailing واقعی طبق انجین شما
+        if highest > entry_val * 1.03:
+            sl_val = max(sl_val, highest * 0.96)
 
-        exit_price = 0
+        exit_p = 0
         if l <= sl_val:
-            exit_price = sl_val
-        elif rsi < 45 and c < ma50: # تاییدیه دوم برای خروج قبل از ضرر سنگین
-            exit_price = c
+            exit_p = sl_val
 
-        if exit_price > 0:
-            pnl = ((exit_price - entry_val) / entry_val) - (fee * 2)
+        if exit_p > 0:
+            pnl = ((exit_p - entry_val) / entry_val) - (fee * 2)
             balance *= (1 + pnl)
             df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
             df.iloc[i, df.columns.get_loc("PnL_Trade")] = pnl * 100
             in_pos = False
-        else:
-            df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
 
 # ======================
 # DAILY AGGREGATION
@@ -119,8 +109,7 @@ df['Date'] = df.index.date
 daily_df = df.groupby('Date').agg({
     'Close': 'last',
     'Action': lambda x: 'BUY' if 'BUY' in x.values else ('EXIT' if 'EXIT' in x.values else ('HOLD' if 'HOLD' in x.values else 'WAIT')),
-    'PnL_Trade': 'sum',
-    'Confidence': 'max'
+    'PnL_Trade': 'sum'
 })
 
 daily_df = daily_df[daily_df.index >= start_date]
@@ -132,18 +121,19 @@ net_profit = (balance - 1) * 100
 c1, c2, c3 = st.columns(3)
 c1.metric("Net Profit %", f"{net_profit:.2f}%")
 c2.metric("Final Balance", f"${capital * balance:,.2f}")
-c3.metric("Last Action", daily_df['Action'].iloc[-1])
+c3.metric("Last Status", daily_df['Action'].iloc[-1])
 
 st.divider()
 st.subheader("🗓️ Daily Trade Log (Hourly Analysis)")
 
+# رفع خطای applymap با استفاده از map (نسخه‌های جدید پانداز)
 def style_action(val):
     colors = {'BUY': '#27ae60', 'EXIT': '#c0392b', 'HOLD': '#2980b9', 'WAIT': '#7f8c8d'}
     return f'background-color: {colors.get(val, "white")}; color: white; font-weight: bold'
 
 st.dataframe(
     daily_df.sort_index(ascending=False)
-    .style.applymap(style_action, subset=['Action'])
+    .style.map(style_action, subset=['Action'])
     .format({"PnL_Trade": "{:+.2f}%", "Close": "{:,.1f}"}),
     use_container_width=True,
     height=600
