@@ -5,14 +5,14 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("SPOT SWING SYSTEM (HOLD MODE)")
+st.title("SPOT SWING SYSTEM (BALANCED MODE)")
 
 # ======================
 # DATA
 # ======================
 def get_data():
     url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 500}
+    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 800}
     data = requests.get(url, params=params).json()
 
     df = pd.DataFrame(data, columns=[
@@ -53,8 +53,7 @@ losses = 0
 total_profit = 0
 total_loss = 0
 
-max_hold = 20  # 🔥 نگه‌داری بیشتر (اسپات)
-trail_active = False
+max_hold = 20
 
 df["Signal"] = "WAIT"
 df["PnL"] = np.nan
@@ -69,8 +68,8 @@ for i in range(20, len(df)-max_hold):
 
     move = (p1["Close"] - p2["Close"]) / p2["Close"]
 
-    # فقط حرکت مثبت
-    if move < 0.001:
+    # حداقل مومنتوم
+    if move < 0.0008:
         continue
 
     # روند
@@ -79,22 +78,23 @@ for i in range(20, len(df)-max_hold):
 
     # ولتیلیتی
     vol = atr.iloc[i] / df["Close"].iloc[i]
-    if vol < 0.003:
+    if vol < 0.002:
         continue
 
     entry = df["Open"].iloc[i]
 
-    # 🔥 breakout واقعی
-    recent_high = df["High"].iloc[i-5:i].max()
-    if entry <= recent_high:
+    # 🔥 breakout نرم
+    recent_high = df["High"].iloc[i-8:i].max()
+    if entry < recent_high * 0.995:
         continue
 
     # SL و TP
-    sl = min(p1["Low"], entry * (1 - 0.01))
-    tp = entry * 1.02  # حداقل 2%
+    sl = min(p1["Low"], entry * 0.99)
+    tp = entry * 1.015  # 1.5%
 
-    # فیلتر ورود
-    if (tp - entry) / entry < 0.01:
+    # فقط ورود اگر حداقل 1% پتانسیل داشته باشه
+    predicted = (tp - entry) / entry
+    if predicted < 0.01:
         continue
 
     exit_price = entry
@@ -108,26 +108,20 @@ for i in range(20, len(df)-max_hold):
         high = df["High"].iloc[i+j]
         low = df["Low"].iloc[i+j]
 
-        # ثبت بیشترین قیمت
+        # ثبت سقف
         if high > highest:
             highest = high
 
-        # 🔥 TRAILING STOP
-        trail_sl = highest * 0.98  # 2% trailing
+        # trailing stop
+        trail_sl = highest * 0.985
 
-        # SL
         if low <= sl:
             exit_price = sl
             break
 
-        # trailing
         if low <= trail_sl:
             exit_price = trail_sl
             break
-
-        # TP اولیه (فقط فعال‌کننده trailing)
-        if high >= tp:
-            trail_active = True
 
         exit_price = df["Close"].iloc[i+j]
 
