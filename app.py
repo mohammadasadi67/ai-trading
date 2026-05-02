@@ -4,16 +4,16 @@ import numpy as np
 import requests
 from datetime import date
 
-st.set_page_config(layout="wide", page_title="BTC BACKTEST PRO")
-st.title("🧪 BTC BACKTEST: Custom Range (Hourly/Daily)")
+st.set_page_config(layout="wide", page_title="BTC LONG-TERM BACKTEST")
+st.title("🧪 BTC BACKTEST: Long-Term vs Short-Term")
 
 # ======================
-# DATA FETCHING
+# DATA FETCHING (Dynamic Interval)
 # ======================
-@st.cache_data(ttl=600)
-def get_data(limit=2000):
-    url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "1h", "limit": limit}
+@st.cache_data(ttl=3600)
+def get_data(symbol="BTCUSDT", interval="1d", limit=1500):
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
     try:
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
@@ -27,127 +27,98 @@ def get_data(limit=2000):
         return pd.DataFrame()
 
 # ======================
-# SIDEBAR - RANGE SETTINGS
+# SIDEBAR
 # ======================
 with st.sidebar:
-    st.header("🗓️ بازه بک‌تست")
+    st.header("🗓️ تنظیمات بازه")
+    # انتخاب تایم‌فریم برای حل مشکل محدودیت تعداد کندل
+    time_mode = st.radio("تایم‌فریم تحلیل:", 
+                         ["روزانه (برای بک‌تست طولانی از 2023)", 
+                          "یک ساعته (فقط 2 ماه اخیر)"])
+    
+    interval = "1d" if "روزانه" in time_mode else "1h"
+    
     start_dt = st.date_input("از تاریخ", value=date(2023, 1, 1))
-    end_dt = st.date_input("تا تاریخ", value=date.today())
+    end_dt = st.date_input("تا تاریخ", value=date(2026, 5, 2))
     
     st.divider()
-    st.header("💰 تنظیمات سرمایه")
-    capital = st.number_input("Capital ($)", value=1000.0)
-    fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
+    capital = st.number_input("سرمایه اولیه ($)", value=1000.0)
+    fee = st.slider("کارمزد (%)", 0.0, 0.5, 0.05) / 100
 
-df_raw = get_data()
-if df_raw.empty:
-    st.error("خطا در اتصال به API بایننس")
-    st.stop()
+# دریافت دیتا (اگر روزانه باشد 1500 کندل یعنی حدود 4 سال دیتا)
+df_raw = get_data(interval=interval)
 
-# ======================
-# INDICATORS (Pre-calculated)
-# ======================
-df = df_raw.copy()
-df["MA50"] = df["Close"].rolling(50).mean()
-df["MA200"] = df["Close"].rolling(200).mean()
-df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-
-delta = df["Close"].diff()
-gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-df["RSI"] = 100 - (100 / (1 + (gain/loss)))
-
-# ======================
-# ENGINE (RANGE-BASED BACKTEST)
-# ======================
-df["Action"] = "WAIT"
-df["PnL_Trade"] = 0.0
-
-balance = 1.0
-in_pos = False
-entry_val = 0
-sl_val = 0
-highest = 0
-
-# حلقه اصلی روی کل دیتا اما اعمال منطق فقط در بازه انتخابی
-for i in range(200, len(df)):
-    current_date = df.index[i].date()
+if not df_raw.empty:
+    # ======================
+    # INDICATORS
+    # ======================
+    df = df_raw.copy()
+    df["MA50"] = df["Close"].rolling(50).mean()
+    df["MA200"] = df["Close"].rolling(200).mean()
+    df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
     
-    # فیلتر بازه زمانی
-    if not (start_dt <= current_date <= end_dt):
-        continue
+    delta = df["Close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df["RSI"] = 100 - (100 / (1 + (gain/loss)))
 
-    c = df["Close"].iloc[i]
-    h = df["High"].iloc[i]
-    l = df["Low"].iloc[i]
-    rsi = df["RSI"].iloc[i]
-    ma50 = df["MA50"].iloc[i]
-    ma200 = df["MA200"].iloc[i]
-    atr = df["ATR"].iloc[i]
+    # ======================
+    # ENGINE (PRO TREND)
+    # ======================
+    df["Action"] = "WAIT"
+    df["PnL_Trade"] = 0.0
+    balance = 1.0
+    in_pos = False
+    entry_val = sl_val = highest = 0
 
-    if not in_pos:
-        if c > ma50 > ma200 and 55 < rsi < 70:
-            in_pos = True
-            entry_val = c
-            sl_val = entry_val - (atr * 1.2)
-            highest = entry_val
-            df.iloc[i, df.columns.get_loc("Action")] = "BUY"
-    else:
-        df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
-        if h > highest:
-            highest = h
-        
-        # Trailing 3%
-        if highest > entry_val * 1.03:
-            sl_val = max(sl_val, highest * 0.96)
+    for i in range(50, len(df)):
+        curr_dt = df.index[i].date()
+        if not (start_dt <= curr_dt <= end_dt):
+            continue
 
-        exit_p = 0
-        if l <= sl_val:
-            exit_p = sl_val
+        c, h, l = df["Close"].iloc[i], df["High"].iloc[i], df["Low"].iloc[i]
+        rsi, ma50, ma200, atr = df["RSI"].iloc[i], df["MA50"].iloc[i], df["MA200"].iloc[i], df["ATR"].iloc[i]
 
-        if exit_p > 0:
-            pnl = ((exit_p - entry_val) / entry_val) - (fee * 2)
-            balance *= (1 + pnl)
-            df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
-            df.iloc[i, df.columns.get_loc("PnL_Trade")] = pnl * 100
-            in_pos = False
+        if not in_pos:
+            if c > ma50 > ma200 and 55 < rsi < 70:
+                in_pos, entry_val = True, c
+                sl_val = entry_val - (atr * 1.5)
+                highest = entry_val
+                df.iloc[i, df.columns.get_loc("Action")] = "BUY"
+        else:
+            df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
+            highest = max(highest, h)
+            if highest > entry_val * 1.03:
+                sl_val = max(sl_val, highest * 0.96)
+            
+            if l <= sl_val:
+                pnl = ((sl_val - entry_val) / entry_val) - (fee * 2)
+                balance *= (1 + pnl)
+                df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
+                df.iloc[i, df.columns.get_loc("PnL_Trade")] = pnl * 100
+                in_pos = False
 
-# ======================
-# DATA AGGREGATION & FILTERING
-# ======================
-df['Date'] = df.index.date
-# فیلتر نهایی دیتای نمایش برای جدول
-df_display = df[(df.index.date >= start_dt) & (df.index.date <= end_dt)].copy()
+    # ======================
+    # DISPLAY
+    # ======================
+    df_final = df[(df.index.date >= start_dt) & (df.index.date <= end_dt)].copy()
+    
+    col1, col2 = st.columns(2)
+    col1.metric("Net Profit %", f"{(balance-1)*100:.2f}%")
+    col2.metric("Final Balance", f"${capital * balance:,.2f}")
 
-daily_df = df_display.groupby('Date').agg({
-    'Close': 'last',
-    'Action': lambda x: 'BUY' if 'BUY' in x.values else ('EXIT' if 'EXIT' in x.values else ('HOLD' if 'HOLD' in x.values else 'WAIT')),
-    'PnL_Trade': 'sum'
-})
+    st.subheader(f"📊 گزارش معاملات ({interval})")
+    
+    def style_act(val):
+        color = {'BUY': '#2ecc71', 'EXIT': '#e74c3c', 'HOLD': '#3498db'}.get(val, '#95a5a6')
+        return f'background-color: {color}; color: white; font-weight: bold'
 
-# ======================
-# RESULTS & UI
-# ======================
-net_profit = (balance - 1) * 100
-col1, col2, col3 = st.columns(3)
-col1.metric("Net Profit (%)", f"{net_profit:.2f}%")
-col2.metric("Final Balance ($)", f"{capital * balance:,.1f}")
-col3.metric("Status", daily_df['Action'].iloc[-1] if not daily_df.empty else "None")
-
-st.divider()
-st.subheader(f"📊 جدول معاملات از {start_dt} تا {end_dt}")
-
-def style_action(val):
-    colors = {'BUY': '#2ecc71', 'EXIT': '#e74c3c', 'HOLD': '#3498db', 'WAIT': '#95a5a6'}
-    return f'background-color: {colors.get(val, "white")}; color: white; font-weight: bold'
-
-if not daily_df.empty:
+    # اگر تایم‌فریم روزانه است، تجمیع نمی‌خواهیم، مستقیم نشان می‌دهیم
     st.dataframe(
-        daily_df.sort_index(ascending=False)
-        .style.map(style_action, subset=['Action'])
+        df_final[["Close", "Action", "PnL_Trade"]].sort_index(ascending=False)
+        .style.map(style_act, subset=['Action'])
         .format({"PnL_Trade": "{:+.2f}%", "Close": "{:,.1f}"}),
-        use_container_width=True,
-        height=600
+        use_container_width=True
     )
 else:
-    st.info("دیتایی در این بازه یافت نشد. لطفاً بازه زمانی را تغییر دهید.")
+    st.error("دیتا از بایننس دریافت نشد.")
