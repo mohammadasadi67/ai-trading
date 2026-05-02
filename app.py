@@ -82,14 +82,18 @@ if not df.empty:
         p1 = df.iloc[i-1]
         p2 = df.iloc[i-2]
 
-        move = (p1["Close"] - p2["Close"]) / p2["Close"]
+        # 🔥 حرکت (بدون جهت برای افزایش سیگنال)
+        move = abs((p1["Close"] - p2["Close"]) / p2["Close"])
 
-        if move < 0.004:
+        # 🔥 فیلتر سبک‌تر → ترید بیشتر
+        if move < 0.002:
             continue
 
         entry = df["Open"].iloc[i]
         sl = p1["Low"]
-        tp = entry + (move * entry * 1.5)
+
+        # 🔥 TP بزرگ‌تر (تهاجمی‌تر)
+        tp = entry + (move * entry * 2.5)
 
         high = df["High"].iloc[i]
         low = df["Low"].iloc[i]
@@ -104,7 +108,8 @@ if not df.empty:
         raw = (exit_price - entry) / entry
         net = (1 + raw) * (1 - fee_rate)**2 - 1
 
-        if net <= 0:
+        # ❌ حذف سودهای زیر 1%
+        if net < 0.01:
             continue
 
         trades += 1
@@ -115,7 +120,18 @@ if not df.empty:
         df.iloc[i, df.columns.get_loc("Target")] = tp
         df.iloc[i, df.columns.get_loc("StopLoss")] = sl
         df.iloc[i, df.columns.get_loc("PnL_Percent")] = net * 100
-        df.iloc[i, df.columns.get_loc("Confidence")] = min(0.95, 0.6 + move*10)
+
+        # ======================
+        # CONFIDENCE (بهبود یافته)
+        # ======================
+        rr = (tp - entry) / max((entry - sl), 1e-6)
+
+        conf = (move * 50 + rr) / 2
+
+        # 🔥 اسکیل نرم (جلوگیری از اشباع)
+        conf = conf / (1 + conf)
+
+        df.iloc[i, df.columns.get_loc("Confidence")] = max(0, min(conf, 1))
 
     # ======================
     # HEADER
@@ -138,7 +154,7 @@ if not df.empty:
     st.divider()
 
     # ======================
-    # TABLE (FULL)
+    # TABLE
     # ======================
     st.subheader("Trading Logs")
 
@@ -159,7 +175,9 @@ if not df.empty:
         }
     )
 
+# ======================
 # AUTO REFRESH
+# ======================
 st.markdown(
     "<script>setTimeout(()=>window.location.reload(),20000)</script>",
     unsafe_allow_html=True
