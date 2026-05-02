@@ -4,8 +4,8 @@ import numpy as np
 import requests
 from datetime import date
 
-st.set_page_config(layout="wide", page_title="BTC ALPHA TRADER")
-st.title("🚀 BTC PRO-ENGINE (V8.0 - DOUBLE CONFIRMATION)")
+st.set_page_config(layout="wide", page_title="BTC PRO SPOT V10")
+st.title("🛡️ BTC PRO TREND-MASTER (V10)")
 
 # ======================
 # DATA FETCHING
@@ -13,7 +13,7 @@ st.title("🚀 BTC PRO-ENGINE (V8.0 - DOUBLE CONFIRMATION)")
 @st.cache_data(ttl=600)
 def get_data(limit=1500):
     url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": limit}
+    params = {"symbol": "BTCUSDT", "interval": "1h", "limit": limit}
     try:
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
@@ -30,100 +30,121 @@ def get_data(limit=1500):
 # SETTINGS
 # ======================
 with st.sidebar:
+    st.header("Settings")
     capital = st.number_input("Capital ($)", value=1000.0)
-    fee = st.slider("Fee (%)", 0.0, 0.5, 0.04) / 100
+    fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
     start_date = st.date_input("Start Date", value=date(2023, 1, 1))
 
-df = get_data()
-df = df[df.index.date >= start_date].copy()
+df_hourly = get_data()
+if df_hourly.empty:
+    st.error("Connection Error")
+    st.stop()
 
 # ======================
 # INDICATORS
 # ======================
-df["MA20"] = df["Close"].rolling(20).mean()
+df = df_hourly.copy()
+df["MA50"] = df["Close"].rolling(50).mean()
+df["MA200"] = df["Close"].rolling(200).mean()
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-df["DonHigh"] = df["High"].rolling(12).max().shift(1)
 
+# RSI
 delta = df["Close"].diff()
 gain = (delta.where(delta > 0, 0)).rolling(14).mean()
 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
 df["RSI"] = 100 - (100 / (1 + (gain/loss)))
 
 # ======================
-# ENGINE (YOUR IMPROVED LOGIC)
+# ENGINE (PRO TREND MODE - OPTIMIZED)
 # ======================
-df["Signal"] = "WAIT"
+df["Action"] = "WAIT"
+df["PnL_Trade"] = 0.0
 df["Confidence"] = 0
-df["Entry"] = 0.0
-df["SL"] = 0.0
-df["Exit"] = 0.0
-df["PnL_%"] = 0.0
 
 balance = 1.0
-trades = wins = losses = 0
 in_pos = False
-entry = sl = highest = 0
+entry_val = 0
+sl_val = 0
+highest = 0
 
-for i in range(50, len(df)):
+for i in range(200, len(df)):
     c = df["Close"].iloc[i]
     h = df["High"].iloc[i]
     l = df["Low"].iloc[i]
-    atr = df["ATR"].iloc[i]
     rsi = df["RSI"].iloc[i]
-    ma20 = df["MA20"].iloc[i]
-    don_h = df["DonHigh"].iloc[i]
+    ma50 = df["MA50"].iloc[i]
+    ma200 = df["MA200"].iloc[i]
+    atr = df["ATR"].iloc[i]
 
     if not in_pos:
-        if c > don_h and 52 < rsi < 68:
-            entry = c
-            sl = entry - (atr * 1.2)
-            highest = entry
+        # ورود: روند صعودی تثبیت شده + مومنتوم مثبت
+        if c > ma50 > ma200 and 55 < rsi < 70:
             in_pos = True
-            conf = int(np.clip((rsi-50)*6 + 40, 0, 100))
+            entry_val = c
+            sl_val = entry_val - (atr * 1.5) # استاپ لاس امن‌تر
+            highest = entry_val
             
-            df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
-            df.iloc[i, df.columns.get_loc("Entry")] = entry
-            df.iloc[i, df.columns.get_loc("SL")] = sl
+            conf = int(np.clip((rsi-50)*5 + 50, 0, 100))
+            df.iloc[i, df.columns.get_loc("Action")] = "BUY"
             df.iloc[i, df.columns.get_loc("Confidence")] = conf
-
     else:
-        df.iloc[i, df.columns.get_loc("Signal")] = "HOLD"
-        highest = max(highest, h)
-
-        # ریسک‌فری و تریلینگ
-        if highest > entry * 1.015:
-            sl = max(sl, entry + (entry * 0.001))
-        if highest > entry * 1.04: # تریلینگ کمی دورتر برای اجازه رشد بیشتر
-            sl = max(sl, highest * 0.96)
+        # مدیریت پوزیشن
+        if h > highest:
+            highest = h
+        
+        # تریلینگ هوشمند: وقتی سود به ۲٪ رسید، استاپ را پله‌پله بالا ببر
+        if highest > entry_val * 1.02:
+            new_sl = highest - (atr * 2.0)
+            sl_val = max(sl_val, new_sl)
 
         exit_price = 0
-
-        # 🔥 انجین اصلاح شده توسط شما
-        if l <= sl:
-            exit_price = sl
-        elif c < ma20 and rsi < 45: # تاییدیه دوگانه برای خروج زودهنگام
+        if l <= sl_val:
+            exit_price = sl_val
+        elif rsi < 45 and c < ma50: # تاییدیه دوم برای خروج قبل از ضرر سنگین
             exit_price = c
 
         if exit_price > 0:
-            pnl = ((exit_price - entry) / entry) - (fee * 2)
+            pnl = ((exit_price - entry_val) / entry_val) - (fee * 2)
             balance *= (1 + pnl)
-            trades += 1
-            if pnl > 0: wins += 1
-            else: losses += 1
-            df.iloc[i, df.columns.get_loc("Exit")] = exit_price
-            df.iloc[i, df.columns.get_loc("PnL_%")] = pnl * 100
+            df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
+            df.iloc[i, df.columns.get_loc("PnL_Trade")] = pnl * 100
             in_pos = False
+        else:
+            df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
 
 # ======================
-# DASHBOARD
+# DAILY AGGREGATION
 # ======================
-winrate = (wins / trades * 100) if trades else 0
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total Trades", trades)
-c2.metric("Winrate", f"{winrate:.1f}%")
-c3.metric("Net Profit", f"{(balance-1)*100:.2f}%")
-c4.metric("Final Balance", f"${capital * balance:,.2f}")
+df['Date'] = df.index.date
+daily_df = df.groupby('Date').agg({
+    'Close': 'last',
+    'Action': lambda x: 'BUY' if 'BUY' in x.values else ('EXIT' if 'EXIT' in x.values else ('HOLD' if 'HOLD' in x.values else 'WAIT')),
+    'PnL_Trade': 'sum',
+    'Confidence': 'max'
+})
+
+daily_df = daily_df[daily_df.index >= start_date]
+
+# ======================
+# METRICS & DISPLAY
+# ======================
+net_profit = (balance - 1) * 100
+c1, c2, c3 = st.columns(3)
+c1.metric("Net Profit %", f"{net_profit:.2f}%")
+c2.metric("Final Balance", f"${capital * balance:,.2f}")
+c3.metric("Last Action", daily_df['Action'].iloc[-1])
 
 st.divider()
-report = df[(df["Signal"] == "BUY") | (df["PnL_%"] != 0)].copy()
-st.dataframe(report[["Signal", "Confidence", "Entry", "SL", "Exit", "PnL_%"]].sort_index(ascending=False), use_container_width=True)
+st.subheader("🗓️ Daily Trade Log (Hourly Analysis)")
+
+def style_action(val):
+    colors = {'BUY': '#27ae60', 'EXIT': '#c0392b', 'HOLD': '#2980b9', 'WAIT': '#7f8c8d'}
+    return f'background-color: {colors.get(val, "white")}; color: white; font-weight: bold'
+
+st.dataframe(
+    daily_df.sort_index(ascending=False)
+    .style.applymap(style_action, subset=['Action'])
+    .format({"PnL_Trade": "{:+.2f}%", "Close": "{:,.1f}"}),
+    use_container_width=True,
+    height=600
+)
