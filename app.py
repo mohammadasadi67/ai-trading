@@ -5,7 +5,7 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("SPOT POSITION SYSTEM (HOLD + DYNAMIC TP/SL)")
+st.title("SPOT POSITION SYSTEM (HOLD + TRAILING ONLY)")
 
 # ======================
 # DATA
@@ -35,7 +35,7 @@ fee = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
 start_date = st.sidebar.date_input("Start", value=date(2024,1,1))
 
 # ======================
-# LOAD DATA (مهم)
+# LOAD
 # ======================
 df = get_data("4h", 800)
 df = df[df.index.date >= start_date].copy()
@@ -47,14 +47,11 @@ df["MA20"] = df["Close"].rolling(20).mean()
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
 
 # ======================
-# INIT COLUMNS (بعد از df!)
+# INIT
 # ======================
 df["Signal"] = "WAIT"
 df["PnL"] = np.nan
 
-# ======================
-# VARIABLES
-# ======================
 balance = 1.0
 trades = 0
 wins = 0
@@ -65,7 +62,6 @@ total_loss = 0
 in_position = False
 entry_price = 0
 sl = 0
-tp = 0
 highest = 0
 
 # ======================
@@ -89,8 +85,9 @@ for i in range(30, len(df)):
         if close > ma and close > recent_high:
 
             entry_price = close
-            sl = entry_price - atr * 0.7
-            tp = entry_price + atr * 2
+
+            # ❗ SL کوچک‌تر (کنترل ضرر)
+            sl = entry_price - atr * 0.5
 
             highest = entry_price
             in_position = True
@@ -108,29 +105,20 @@ for i in range(30, len(df)):
         if high > highest:
             highest = high
 
-        # 🔥 TP داینامیک
-        tp = max(tp, highest + atr * 1.5)
-
-        # 🔥 SL داینامیک (قفل سود)
+        # ❗ Trailing واقعی (درصدی)
         if highest > entry_price * 1.02:
-            sl = max(sl, highest - atr * 1.0)
+            sl = max(sl, highest * 0.97)  # 3% اصلاح
 
         exit_price = None
 
         # ======================
-        # EXIT CONDITIONS
+        # EXIT فقط با SL
         # ======================
-        if high >= tp:
-            exit_price = tp
-
-        elif low <= sl:
+        if low <= sl:
             exit_price = sl
 
-        elif close < ma * 0.995:
-            exit_price = close
-
         # ======================
-        # EXIT → فقط اینجا PnL
+        # EXIT → فقط PnL
         # ======================
         if exit_price is not None:
 
