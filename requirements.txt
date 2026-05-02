@@ -1,7 +1,5 @@
 streamlit
 pandas
 numpy
-matplotlib
-stable-baselines3
-gymnasium
-torch
+requests
+ccxt
