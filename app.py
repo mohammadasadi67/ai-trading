@@ -4,22 +4,16 @@ import numpy as np
 import requests
 from datetime import date
 
-st.set_page_config(layout="wide", page_title="BTC WHALE PRO V16")
-st.title("🐋 BTC PRO: Whale Mode (V16 - Ultra Growth)")
+st.set_page_config(layout="wide", page_title="BTC ULTRA SAFE")
+st.title("🐋 BTC PRO: Low Risk Mode (Anti-Whipsaw)")
 
 # ======================
-# DATA (MULTI-ENDPOINT SAFE)
+# DATA (MULTI-ENDPOINT)
 # ======================
 @st.cache_data(ttl=3600)
 def get_data(start_str="2023-01-01"):
-    endpoints = [
-        "https://api1.binance.com/api/v3/klines",
-        "https://api2.binance.com/api/v3/klines",
-        "https://data-api.binance.vision/api/v3/klines"
-    ]
+    endpoints = ["https://api1.binance.com/api/v3/klines", "https://api2.binance.com/api/v3/klines"]
     start_ts = int(pd.Timestamp(start_str).timestamp() * 1000)
-    all_data = []
-
     for url in endpoints:
         all_data = []
         current_ts = start_ts
@@ -29,13 +23,12 @@ def get_data(start_str="2023-01-01"):
                 res = requests.get(url, params=params, timeout=15)
                 if res.status_code != 200: break
                 data = res.json()
-                if not isinstance(data, list) or not data: break
+                if not data: break
                 all_data.extend(data)
                 current_ts = data[-1][0] + 1
                 if len(data) < 1000: break
             if all_data: break
         except: continue
-
     if not all_data: return pd.DataFrame()
     df = pd.DataFrame(all_data).iloc[:, :5]
     df.columns = ["Time", "Open", "High", "Low", "Close"]
@@ -44,65 +37,71 @@ def get_data(start_str="2023-01-01"):
     return df.astype(float)
 
 # ======================
-# SIDEBAR
+# LOAD & INDICATORS
 # ======================
 with st.sidebar:
-    st.header("⚙️ تنظیمات بک‌تست")
+    st.header("⚙️ تنظیمات ایمنی")
     start_dt = st.date_input("Start Date", value=date(2023,1,1))
     end_dt = st.date_input("End Date", value=date.today())
-    st.divider()
-    capital = st.number_input("سرمایه اولیه ($)", value=1000.0)
+    capital = st.number_input("Capital ($)", value=1000.0)
     fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
-    st.info("حالت: Ultimate Holder (مخصوص ۲۰۲۶)")
+    risk_level = st.select_slider("سطح حساسیت ورود", options=["خیلی کم", "متوسط", "زیاد"], value="خیلی کم")
 
-# ======================
-# LOAD & PROCESS
-# ======================
-with st.spinner("در حال دریافت دیتای زنده بایننس..."):
-    df_raw = get_data("2023-01-01")
-
-if df_raw.empty:
-    st.error("❌ دیتایی دریافت نشد!")
-    st.stop()
-
+df_raw = get_data("2023-01-01")
 df = df_raw.copy()
+
+# اندیکاتورهای تاییدیه
+df["MA50"] = df["Close"].rolling(50).mean()
 df["MA200"] = df["Close"].rolling(200).mean()
+df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
+
+# RSI برای تشخیص قدرت
+delta = df["Close"].diff()
+gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+df["RSI"] = 100 - (100 / (1 + (gain/loss)))
+
+# ======================
+# ENGINE (ULTRA SAFE LOGIC)
+# ======================
 df["Action"] = "WAIT"
 df["PnL"] = 0.0
-
-# ======================
-# ENGINE (ULTIMATE HOLDER - ANTI-LOSS 2026)
-# ======================
-balance = 1.0
-in_pos = False
+balance, in_pos = 1.0, False
 entry = sl = 0
+
+rsi_limit = 60 if risk_level == "خیلی کم" else 55
 
 for i in range(200, len(df)):
     t = df.index[i]
-    c, l = df["Close"].iloc[i], df["Low"].iloc[i]
-    ma200 = df["MA200"].iloc[i]
+    c, l, h = df["Close"].iloc[i], df["Low"].iloc[i], df["High"].iloc[i]
+    ma50, ma200, rsi, atr = df["MA50"].iloc[i], df["MA200"].iloc[i], df["RSI"].iloc[i], df["ATR"].iloc[i]
 
+    # منطق ورود سخت‌گیرانه
     if not in_pos and (start_dt <= t.date() <= end_dt):
-        # ورود فقط در تایید روند صعودی کلان
-        if c > ma200:
+        # شرط 1: قیمت بالای هر دو میانگین (روند صعودی قطعی)
+        # شرط 2: RSI بالای مرز ایمن (قدرت خرید واقعی)
+        # شرط 3: قیمت نزدیک به سقف ۲۴ ساعت اخیر نباشد (نخریدن در نوک قله)
+        if c > ma50 > ma200 and rsi > rsi_limit:
             entry = c
-            # استاپ عریض (۱۵٪) برای تحمل نوسانات رنج ۲۰۲۶
-            sl = entry * 0.85 
+            sl = entry - (atr * 3.5) # استاپ بسیار عریض برای جلوگیری از ضرر نوسانی
             in_pos = True
             df.iloc[i, df.columns.get_loc("Action")] = "BUY"
 
     elif in_pos:
         df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
         
-        # بالا بردن پله‌ای استاپ فقط در سودهای بزرگ
-        if c > entry * 1.20:
-            sl = max(sl, entry * 1.05) # ریسک فری + کمی سود
+        # ریسک فری سریع بعد از 3% سود
+        if c > entry * 1.03:
+            sl = max(sl, entry)
+        
+        # قفل سود پله‌ای
+        if c > entry * 1.10:
+            sl = max(sl, c - (atr * 2.0))
 
         exit_p = 0
-        # خروج فقط با استاپ عریض یا شکستن فاجعه‌بار میانگین ۲۰۰
         if l <= sl:
             exit_p = sl
-        elif c < ma200 * 0.98: # خروج با تایید شکست روند
+        elif c < ma50: # خروج زودهنگام در صورت شل شدن روند
             exit_p = c
 
         if exit_p > 0:
@@ -113,17 +112,9 @@ for i in range(200, len(df)):
             in_pos = False
 
 # ======================
-# UI & METRICS
+# RESULTS
 # ======================
 df_display = df[(df.index.date >= start_dt) & (df.index.date <= end_dt)].copy()
-df_display["Date"] = df_display.index.date
-
-daily = df_display.groupby("Date").agg({
-    "Close": "last",
-    "Action": lambda x: "BUY" if "BUY" in x.values else ("EXIT" if "EXIT" in x.values else ("HOLD" if "HOLD" in x.values else "WAIT")),
-    "PnL": "sum"
-})
-
 net_profit = (balance - 1) * 100
 c1, c2, c3 = st.columns(3)
 c1.metric("Net Profit %", f"{net_profit:.2f}%")
@@ -131,13 +122,4 @@ c2.metric("Final Balance", f"${capital * balance:,.2f}")
 c3.metric("Total Trades", len(df[df["Action"] == "EXIT"]))
 
 st.divider()
-def color_action(val):
-    colors = {"BUY": "#2ecc71", "EXIT": "#e74c3c", "HOLD": "#3498db", "WAIT": "#95a5a6"}
-    return f"background-color: {colors.get(val, 'gray')}; color: white; font-weight: bold"
-
-st.dataframe(
-    daily.sort_index(ascending=False)
-    .style.map(color_action, subset=["Action"])
-    .format({"PnL": "{:+.2f}%", "Close": "{:,.1f}"}),
-    use_container_width=True, height=600
-)
+st.dataframe(df_display[df_display["Action"] != "WAIT"].sort_index(ascending=False))
