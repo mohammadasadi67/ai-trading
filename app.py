@@ -77,19 +77,23 @@ for i in range(50, len(df)):
 
     # ======================
  # ======================
-# ENTRY (Pullback حرفه‌ای)
+# ======================
+# ENTRY (SMART PULLBACK)
 # ======================
 if not in_pos:
 
     trend = ema20 > ema50
 
-    # اصلاح به EMA20
-    pullback = close < ema20 and close > ema50
+    # فاصله از EMA20 (نه خیلی بالا، نه خیلی پایین)
+    distance = (close - ema20) / ema20
 
-    # برگشت از اصلاح
-    bounce = close > df["Close"].iloc[i-1]
+    # نزدیک EMA باشه
+    near_ema = abs(distance) < 0.01
 
-    if trend and pullback and bounce:
+    # مومنتوم مثبت
+    momentum = close > df["Close"].iloc[i-1]
+
+    if trend and near_ema and momentum:
 
         entry = close
         sl = entry - atr * 0.7
