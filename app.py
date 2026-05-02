@@ -4,19 +4,19 @@ import numpy as np
 import requests
 from datetime import date
 
-st.set_page_config(layout="wide", page_title="BTC TREND HUNTER V18")
-st.title("🐋 BTC PRO: Trend Hunter (V18 - Max Profit)")
+st.set_page_config(layout="wide", page_title="BTC SUPER WHALE PRO")
+st.title("🐋 BTC PRO: Super Whale Mode (V20 - RISK & GROWTH)")
 
 # ======================
-# DATA LOADER
+# DATA ENGINE
 # ======================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600)
 def get_data(start_str="2023-01-01"):
     url = "https://api1.binance.com/api/v3/klines"
     start_ts = int(pd.Timestamp(start_str).timestamp() * 1000)
-    params = {"symbol": "BTCUSDT", "interval": "1h", "startTime": start_ts, "limit": 1000}
     try:
-        res = requests.get(url, params=params, timeout=10)
+        params = {"symbol": "BTCUSDT", "interval": "1h", "startTime": start_ts, "limit": 1000}
+        res = requests.get(url, params=params, timeout=15)
         data = res.json()
         df = pd.DataFrame(data).iloc[:, :5]
         df.columns = ["Time", "Open", "High", "Low", "Close"]
@@ -26,72 +26,94 @@ def get_data(start_str="2023-01-01"):
     except: return pd.DataFrame()
 
 # ======================
-# PROCESS
+# SIDEBAR
 # ======================
 with st.sidebar:
-    st.header("⚙️ تنظیمات شکارچی")
+    st.header("⚙️ Settings")
     start_dt = st.date_input("Start Date", value=date(2023,1,1))
     end_dt = st.date_input("End Date", value=date.today())
+    st.divider()
     capital = st.number_input("Capital ($)", value=1000.0)
-    fee = 0.0005 # 0.05% کارمزد ثابت
-
-df_raw = get_data("2023-01-01")
-if df_raw.empty:
-    st.error("دیتا دریافت نشد.")
-    st.stop()
-
-df = df_raw.copy()
-df["MA200"] = df["Close"].rolling(200).mean()
-df["HH_20"] = df["High"].rolling(20).max().shift(1) # سقف ۲۰ ساعت اخیر
-df["LL_20"] = df["Low"].rolling(20).min().shift(1)  # کف ۲۰ ساعت اخیر
+    fee = 0.0005 # کارمزد فیکس 0.05%
 
 # ======================
-# ENGINE (TREND FOLLOWING)
+# LOAD DATA
+# ======================
+with st.spinner("Loading BTC data..."):
+    df = get_data("2023-01-01")
+
+if df.empty:
+    st.error("❌ اتصال برقرار نشد. لطفا دوباره تلاش کنید.")
+    st.stop()
+
+# ======================
+# INDICATORS (THE ENGINE)
+# ======================
+df["MA50"] = df["Close"].rolling(50).mean()
+df["MA200"] = df["Close"].rolling(200).mean()
+# برای حذف ضرر کوچک، از کانال قیمتی بلندمدت‌تر استفاده می‌کنیم
+df["Highest_48h"] = df["High"].rolling(48).max().shift(1)
+df["Lowest_48h"] = df["Low"].rolling(48).min().shift(1)
+
+# ======================
+# SUPER WHALE ENGINE (V20)
 # ======================
 df["Action"] = "WAIT"
 df["PnL"] = 0.0
-balance, in_pos = 1.0, False
+balance = 1.0
+in_pos = False
 entry = sl = 0
 
-for i in range(20, len(df)):
-    t = df.index[i]
-    c, l, h = df["Close"].iloc[i], df["Low"].iloc[i], df["High"].iloc[i]
-    ma200, hh, ll = df["MA200"].iloc[i], df["HH_20"].iloc[i], df["LL_20"].iloc[i]
+df_test = df[df.index.date >= start_dt].copy()
 
-    # ورود: قیمت سقف ۲۰ ساعته را بزند و بالای MA200 باشد
-    if not in_pos and (start_dt <= t.date() <= end_dt):
-        if c > hh and c > ma200:
+for i in range(len(df_test)):
+    idx = df_test.index[i]
+    c, l, h = df_test["Close"].iloc[i], df_test["Low"].iloc[i], df_test["High"].iloc[i]
+    ma50, ma200 = df_test["MA50"].iloc[i], df_test["MA200"].iloc[i]
+    h48, l48 = df_test["Highest_48h"].iloc[i], df_test["Lowest_48h"].iloc[i]
+
+    # ورود با ریسک بالا: شکست سقف ۲ روزه + روند صعودی کلان
+    if not in_pos:
+        if c > h48 and c > ma200:
             entry = c
-            sl = ll # استاپ روی کف ۲۰ ساعته (منطقی و متحرک)
+            sl = l48 # استاپ عریض (کف ۲ روز اخیر) برای حذف نوسان فیک
             in_pos = True
-            df.iloc[i, df.columns.get_loc("Action")] = "BUY"
+            df_test.loc[idx, "Action"] = "BUY"
 
     elif in_pos:
-        df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
+        df_test.loc[idx, "Action"] = "HOLD"
         
-        # تریلینگ استاپ: همیشه استاپ را به کف ۲۰ ساعت اخیر منتقل کن
-        sl = max(sl, ll)
+        # تریلینگ استاپ هوشمند: فقط وقتی قیمت بالا می‌رود، استاپ را بالا بکش
+        # این کار اجازه می‌دهد سودهای نجومی رشد کنند
+        sl = max(sl, l48)
 
-        exit_p = 0
+        # خروج فقط وقتی روند ۲ روزه کاملاً بشکند
         if l <= sl:
-            exit_p = sl
-        
-        if exit_p > 0:
-            p = ((exit_p - entry) / entry) - (fee * 2)
-            balance *= (1 + p)
-            df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
-            df.iloc[i, df.columns.get_loc("PnL")] = p * 100
+            pnl = ((sl - entry) / entry) - (fee * 2)
+            balance *= (1 + pnl)
+            df_test.loc[idx, "Action"] = "EXIT"
+            df_test.loc[idx, "PnL"] = pnl * 100
             in_pos = False
 
 # ======================
-# RESULTS
+# DISPLAY (YOUR ORIGINAL STYLE)
 # ======================
 net_profit = (balance - 1) * 100
-c1, c2, c3 = st.columns(3)
-c1.metric("Net Profit %", f"{net_profit:.2f}%")
-c2.metric("Final Balance", f"${capital * balance:,.2f}")
-c3.metric("Trades", len(df[df["Action"] == "EXIT"]))
+col1, col2, col3 = st.columns(3)
+col1.metric("Net Profit %", f"{net_profit:.2f}%")
+col2.metric("Final Balance", f"${capital * balance:,.2f}")
+col3.metric("Total Trades", len(df_test[df_test["Action"] == "EXIT"]))
 
 st.divider()
-st.subheader("📊 وضعیت روزانه و تریدها")
-st.dataframe(df[df["Action"] != "WAIT"].sort_index(ascending=False), use_container_width=True)
+st.subheader("📊 Trade Report")
+
+def color_act(x):
+    colors = {"BUY": "#2ecc71", "EXIT": "#e74c3c", "HOLD": "#3498db", "WAIT": "#95a5a6"}
+    return f"background-color:{colors.get(x,'white')};color:white"
+
+st.dataframe(
+    df_test[df_test["Action"] != "WAIT"].sort_index(ascending=False)
+    .style.map(color_act, subset=["Action"])
+    .format({"PnL": "{:+.2f}%", "Close": "{:,.1f}"}),
+    use_container_width=True, height=600
+)
