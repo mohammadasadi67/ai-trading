@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timedelta, date
 
 st.set_page_config(layout="wide", page_title="Professional Trading Dashboard")
-st.title("mohammad pattern - REAL ENTRY MODE")
+st.title("mohammad pattern - EDGE MODE")
 
 # ======================
 # DATA
@@ -68,26 +68,44 @@ if not df.empty:
     scale_trigger = 0.004
 
     ma = df["Close"].rolling(20).mean()
+    atr = (df["High"] - df["Low"]).rolling(14).mean()
 
     for i in range(20, len(df)-max_hold):
 
         p1 = df.iloc[i-1]
         p2 = df.iloc[i-2]
 
-        move = abs((p1["Close"] - p2["Close"]) / p2["Close"])
+        # ======================
+        # جهت حرکت (trend momentum)
+        # ======================
+        move = (p1["Close"] - p2["Close"]) / p2["Close"]
 
-        if move < 0.0008:
+        if move < 0.001:
             continue
 
+        # ======================
+        # فیلتر روند
+        # ======================
         if df["Close"].iloc[i-1] < ma.iloc[i-1]:
             continue
 
+        # ======================
+        # فیلتر بازار رنج
+        # ======================
+        volatility = atr.iloc[i] / df["Close"].iloc[i]
+        if volatility < 0.003:
+            continue
+
         entry = df["Open"].iloc[i]
-        sl = p1["Low"]
-        tp = entry + (move * entry * 1.4)
 
         # ======================
-        # ✅ ENTRY FILTER (>=1%)
+        # SL / TP حرفه‌ای
+        # ======================
+        sl = entry - (move * entry * 0.8)
+        tp = entry + (move * entry * 1.2)
+
+        # ======================
+        # فیلتر ورود (حداقل 1%)
         # ======================
         predicted_profit = (tp - entry) / entry
         if predicted_profit < 0.01:
@@ -122,7 +140,7 @@ if not df.empty:
         net = (1 + raw) * (1 - fee_rate)**2 - 1
 
         # ======================
-        # ✅ REAL RECORD (NO FILTER)
+        # ثبت واقعی
         # ======================
         trades += 1
         balance *= (1 + net)
@@ -140,7 +158,7 @@ if not df.empty:
         df.iloc[i, df.columns.get_loc("StopLoss")] = sl
         df.iloc[i, df.columns.get_loc("PnL_Percent")] = net * 100
 
-        # CONFIDENCE
+        # confidence
         rr = (tp - avg_entry) / max((avg_entry - sl), 1e-6)
         conf = (move * 50 + rr) / 2
         conf = conf / (1 + conf)
@@ -175,11 +193,8 @@ if not df.empty:
 
     st.divider()
 
-    st.subheader("All Trades (Real Results)")
+    st.subheader("All Trades (Real)")
     st.dataframe(df.sort_index(ascending=False), use_container_width=True, height=600)
 
 # AUTO REFRESH
-st.markdown(
-    "<script>setTimeout(()=>window.location.reload(),20000)</script>",
-    unsafe_allow_html=True
-)
+st.markdown("<script>setTimeout(()=>window.location.reload(),20000)</script>", unsafe_allow_html=True)
