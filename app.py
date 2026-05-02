@@ -5,7 +5,7 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("SPOT RL-LIKE SWING SYSTEM")
+st.title("SPOT SWING SYSTEM (SR + RL-LIKE)")
 
 # ======================
 # DATA
@@ -27,8 +27,17 @@ def get_data(interval="4h", limit=800):
 
     return df.astype(float)
 
+# ======================
+# INPUT
+# ======================
+capital = st.sidebar.number_input("Capital", value=1000.0)
+fee = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
+start_date = st.sidebar.date_input("Start", value=date(2024,1,1))
+
 df = get_data("4h", 800)
 df_daily = get_data("1d", 400)
+
+df = df[df.index.date >= start_date].copy()
 
 # ======================
 # INDICATORS
@@ -41,77 +50,80 @@ df_daily["MA20"] = df_daily["Close"].rolling(20).mean()
 # ======================
 # SUPPORT / RESISTANCE (Pivot)
 # ======================
-def pivots(df, window=5):
+def get_pivots(df, w=5):
     highs = df["High"]
     lows = df["Low"]
 
-    piv_high = highs[(highs.shift(window) < highs) & (highs.shift(-window) < highs)]
-    piv_low = lows[(lows.shift(window) > lows) & (lows.shift(-window) > lows)]
+    piv_high = highs[(highs.shift(w) < highs) & (highs.shift(-w) < highs)]
+    piv_low = lows[(lows.shift(w) > lows) & (lows.shift(-w) > lows)]
 
     return piv_low.dropna(), piv_high.dropna()
 
-support_levels, resistance_levels = pivots(df)
+supports, resistances = get_pivots(df)
 
 # ======================
-# RL-LIKE SCORE
-# ======================
-def compute_score(i):
-    score = 0
-
-    # 1. Trend 4H
-    if df["Close"].iloc[i] > df["MA20"].iloc[i]:
-        score += 1
-
-    # 2. Trend Daily
-    d_close = df_daily["Close"].iloc[-1]
-    d_ma = df_daily["MA20"].iloc[-1]
-    if d_close > d_ma:
-        score += 1
-
-    # 3. Breakout
-    recent_high = df["High"].iloc[i-8:i].max()
-    if df["Close"].iloc[i] > recent_high:
-        score += 1
-
-    # 4. Distance from support
-    nearest_support = support_levels.iloc[-1] if len(support_levels) else df["Low"].iloc[i]
-    dist = (df["Close"].iloc[i] - nearest_support) / df["Close"].iloc[i]
-    if dist < 0.02:
-        score += 1
-
-    return score
-
-# ======================
-# BACKTEST
+# STRATEGY VARIABLES
 # ======================
 balance = 1.0
 trades = 0
 wins = 0
 losses = 0
+total_profit = 0
+total_loss = 0
 
-df["Signal"] = ""
+df["Signal"] = "WAIT"
 df["PnL"] = np.nan
 df["Confidence"] = 0.0
 
+# ======================
+# RL-LIKE SCORE
+# ======================
+def score(i):
+    s = 0
+
+    # روند 4H
+    if df["Close"].iloc[i] > df["MA20"].iloc[i]:
+        s += 1
+
+    # روند Daily
+    if df_daily["Close"].iloc[-1] > df_daily["MA20"].iloc[-1]:
+        s += 1
+
+    # breakout
+    recent_high = df["High"].iloc[i-8:i].max()
+    if df["Close"].iloc[i] > recent_high:
+        s += 1
+
+    # نزدیک ساپورت
+    if len(supports) > 0:
+        nearest = supports.iloc[-1]
+        dist = (df["Close"].iloc[i] - nearest) / df["Close"].iloc[i]
+        if dist < 0.02:
+            s += 1
+
+    return s
+
+# ======================
+# STRATEGY LOOP
+# ======================
 for i in range(30, len(df)-1):
 
-    score = compute_score(i)
+    sc = score(i)
 
-    # 🔥 RL-like decision
-    if score < 3:
+    # تصمیم RL-like
+    if sc < 3:
         continue
 
     entry = df["Close"].iloc[i]
-
-    # dynamic SL / TP
     atr = df["ATR"].iloc[i]
+
     sl = entry - atr
     tp = entry + atr * 3
 
     highest = entry
     exit_price = entry
 
-    # 🔓 HOLD آزاد
+    # 🔓 HOLD (آزاد)
     for j in range(i+1, len(df)):
 
         high = df["High"].iloc[j]
@@ -136,32 +148,47 @@ for i in range(30, len(df)-1):
 
         exit_price = df["Close"].iloc[j]
 
+    # ======================
     # RESULT
+    # ======================
     pnl = (exit_price - entry) / entry
+    net = (1 + pnl) * (1 - fee)**2 - 1
 
-    balance *= (1 + pnl)
     trades += 1
+    balance *= (1 + net)
 
-    if pnl > 0:
+    if net > 0:
         wins += 1
+        total_profit += net
     else:
         losses += 1
+        total_loss += abs(net)
 
     df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
-    df.iloc[i, df.columns.get_loc("PnL")] = pnl * 100
+    df.iloc[i, df.columns.get_loc("PnL")] = net * 100
 
     # confidence
-    conf = score / 4
+    conf = sc / 4
     df.iloc[i, df.columns.get_loc("Confidence")] = conf
 
 # ======================
 # METRICS
 # ======================
-winrate = wins / trades * 100 if trades else 0
-profit = (balance - 1) * 100
+final_balance = capital * balance
+winrate = (wins / trades * 100) if trades else 0
+net_profit = (balance - 1) * 100
 
-st.metric("Trades", trades)
-st.metric("Winrate", f"{winrate:.2f}%")
-st.metric("Profit %", f"{profit:.2f}%")
+c1, c2, c3 = st.columns(3)
+c1.metric("Trades", trades)
+c2.metric("Winrate", f"{winrate:.2f}%")
+c3.metric("Net Profit %", f"{net_profit:.2f}%")
 
-st.dataframe(df.tail(200))
+c4, c5, c6 = st.columns(3)
+c4.metric("Wins / Losses", f"{wins} / {losses}")
+c5.metric("Total Profit %", f"{total_profit*100:.2f}%")
+c6.metric("Total Loss %", f"{total_loss*100:.2f}%")
+
+st.metric("Balance", f"${final_balance:,.2f}")
+
+st.divider()
+st.dataframe(df.sort_index(ascending=False), use_container_width=True, height=600)
