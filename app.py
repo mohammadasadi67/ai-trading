@@ -12,7 +12,7 @@ st.title("mohammad pattern")
 # ======================
 def get_live_data():
     url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 300}
+    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 500}
     data = requests.get(url, params=params).json()
 
     df = pd.DataFrame(data, columns=[
@@ -28,6 +28,18 @@ def get_live_data():
     return df.astype(float)
 
 # ======================
+# SUPPORT / RESISTANCE (GLOBAL)
+# ======================
+def get_sr_levels(df):
+    highs = df["High"].rolling(20).max()
+    lows = df["Low"].rolling(20).min()
+
+    resistance = highs.iloc[-1]
+    support = lows.iloc[-1]
+
+    return support, resistance
+
+# ======================
 # TIME
 # ======================
 def get_time_remaining():
@@ -40,7 +52,7 @@ def get_time_remaining():
         target = datetime(now.year, now.month, now.day, next_4h)
 
     remaining = target - now
-    return remaining, str(remaining).split(".")[0]
+    return str(remaining).split(".")[0]
 
 # ======================
 # SIDEBAR
@@ -57,16 +69,6 @@ df = df[df.index.date >= start_date].copy()
 
 if not df.empty:
 
-    # ======================
-    # STATUS COLUMN
-    # ======================
-    remaining, time_left = get_time_remaining()
-    df["Status"] = "CLOSED"
-    df.iloc[-1, df.columns.get_loc("Status")] = "LIVE"
-
-    # ======================
-    # STRATEGY
-    # ======================
     df["Signal"] = "WAIT"
     df["Entry"] = np.nan
     df["Target"] = np.nan
@@ -76,108 +78,122 @@ if not df.empty:
 
     balance = 1.0
     trades = 0
+    wins = 0
+    losses = 0
+    total_profit = 0
+    total_loss = 0
 
-    for i in range(2, len(df)):
+    max_hold = 8
+    scale_trigger = 0.004
+
+    for i in range(20, len(df)-max_hold):
 
         p1 = df.iloc[i-1]
         p2 = df.iloc[i-2]
 
-        # 🔥 حرکت (بدون جهت برای افزایش سیگنال)
         move = abs((p1["Close"] - p2["Close"]) / p2["Close"])
 
-        # 🔥 فیلتر سبک‌تر → ترید بیشتر
-        if move < 0.002:
+        if move < 0.0012:
+            continue
+
+        # Trend filter
+        ma = df["Close"].rolling(20).mean()
+        if df["Close"].iloc[i-1] < ma.iloc[i-1]:
             continue
 
         entry = df["Open"].iloc[i]
         sl = p1["Low"]
+        tp = entry + (move * entry * 1.8)
 
-        # 🔥 TP بزرگ‌تر (تهاجمی‌تر)
-        tp = entry + (move * entry * 2.5)
+        position_size = 1
+        avg_entry = entry
+        scaled = False
 
-        high = df["High"].iloc[i]
-        low = df["Low"].iloc[i]
+        exit_price = entry
 
-        exit_price = df["Close"].iloc[i]
+        for j in range(1, max_hold+1):
 
-        if low <= sl:
-            exit_price = sl
-        elif high >= tp:
-            exit_price = tp
+            high = df["High"].iloc[i+j]
+            low = df["Low"].iloc[i+j]
 
-        raw = (exit_price - entry) / entry
+            # SCALE IN
+            if (not scaled) and (low < entry * (1 - scale_trigger)):
+                add_price = entry * (1 - scale_trigger)
+                avg_entry = (avg_entry + add_price) / 2
+                scaled = True
+                position_size += 1
+
+            if low <= sl:
+                exit_price = sl
+                break
+
+            if high >= tp:
+                exit_price = tp
+                break
+
+            exit_price = df["Close"].iloc[i+j]
+
+        raw = (exit_price - avg_entry) / avg_entry
         net = (1 + raw) * (1 - fee_rate)**2 - 1
 
-        # ❌ حذف سودهای زیر 1%
+        # فقط سود بالای 1%
         if net < 0.01:
             continue
 
         trades += 1
         balance *= (1 + net)
 
+        if net > 0:
+            wins += 1
+            total_profit += net
+        else:
+            losses += 1
+            total_loss += abs(net)
+
         df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
-        df.iloc[i, df.columns.get_loc("Entry")] = entry
+        df.iloc[i, df.columns.get_loc("Entry")] = avg_entry
         df.iloc[i, df.columns.get_loc("Target")] = tp
         df.iloc[i, df.columns.get_loc("StopLoss")] = sl
         df.iloc[i, df.columns.get_loc("PnL_Percent")] = net * 100
 
-        # ======================
-        # CONFIDENCE (بهبود یافته)
-        # ======================
-        rr = (tp - entry) / max((entry - sl), 1e-6)
-
+        rr = (tp - avg_entry) / max((avg_entry - sl), 1e-6)
         conf = (move * 50 + rr) / 2
-
-        # 🔥 اسکیل نرم (جلوگیری از اشباع)
         conf = conf / (1 + conf)
 
         df.iloc[i, df.columns.get_loc("Confidence")] = max(0, min(conf, 1))
 
     # ======================
-    # HEADER
+    # METRICS
     # ======================
     price = df["Close"].iloc[-1]
-
-    c1, c2 = st.columns([2,1])
-
-    c1.metric("BTC Price", f"${price:,.2f}")
-    c2.metric("Next Candle", time_left)
+    support, resistance = get_sr_levels(df)
 
     final_balance = initial_capital * balance
+    winrate = (wins / trades * 100) if trades > 0 else 0
+    net_profit_percent = (balance - 1) * 100
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("BTC Price", f"${price:,.2f}")
+    c2.metric("Support", f"${support:,.2f}")
+    c3.metric("Resistance", f"${resistance:,.2f}")
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Balance", f"${final_balance:,.2f}")
-    m2.metric("Profit", f"${final_balance-initial_capital:,.2f}", f"{(balance-1)*100:.2f}%")
-    m3.metric("Trades", trades)
-    m4.metric("Avg Trade", f"{((balance**(1/max(trades,1)))-1)*100:.2f}%")
+    m1.metric("Trades", trades)
+    m2.metric("Winrate", f"{winrate:.2f}%")
+    m3.metric("Wins / Losses", f"{wins} / {losses}")
+    m4.metric("Net Profit %", f"{net_profit_percent:.2f}%")
+
+    m5, m6, m7 = st.columns(3)
+    m5.metric("Total Profit %", f"{total_profit*100:.2f}%")
+    m6.metric("Total Loss %", f"{total_loss*100:.2f}%")
+    m7.metric("Balance", f"${final_balance:,.2f}")
 
     st.divider()
 
-    # ======================
-    # TABLE
-    # ======================
     st.subheader("Trading Logs")
+    st.dataframe(df.sort_index(ascending=False), use_container_width=True, height=600)
 
-    st.dataframe(
-        df.sort_index(ascending=False),
-        use_container_width=True,
-        height=600,
-        column_config={
-            "Open": st.column_config.NumberColumn("Open", format="$%.1f"),
-            "High": st.column_config.NumberColumn("High", format="$%.1f"),
-            "Low": st.column_config.NumberColumn("Low", format="$%.1f"),
-            "Close": st.column_config.NumberColumn("Close", format="$%.1f"),
-            "Entry": st.column_config.NumberColumn("Entry", format="$%.1f"),
-            "Target": st.column_config.NumberColumn("TP", format="$%.1f"),
-            "StopLoss": st.column_config.NumberColumn("SL", format="$%.1f"),
-            "PnL_Percent": st.column_config.NumberColumn("PnL %", format="%.2f%%"),
-            "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1),
-        }
-    )
-
-# ======================
 # AUTO REFRESH
-# ======================
 st.markdown(
     "<script>setTimeout(()=>window.location.reload(),20000)</script>",
     unsafe_allow_html=True
