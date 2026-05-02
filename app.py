@@ -5,7 +5,7 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("SPOT POSITION SYSTEM (PRO ENTRY + HOLD)")
+st.title("🚀 SPOT POSITION PRO (MAX ALPHA)")
 
 # ======================
 # DATA
@@ -21,10 +21,9 @@ def get_data(interval="4h", limit=1000):
     ])
 
     df["time"] = pd.to_datetime(df["time"], unit="ms")
-    df = df[["time","open","high","low","close"]]
-    df.columns = ["Time","Open","High","Low","Close"]
+    df = df[["time","open","high","low","close","volume"]]
+    df.columns = ["Time","Open","High","Low","Close","Volume"]
     df.set_index("Time", inplace=True)
-
     return df.astype(float)
 
 # ======================
@@ -38,13 +37,20 @@ df = get_data("4h", 1000)
 df = df[df.index.date >= start_date].copy()
 
 # ======================
-# INDICATORS
+# INDICATORS (بهینه‌سازی شده)
 # ======================
 df["MA50"] = df["Close"].rolling(50).mean()
+df["MA200"] = df["Close"].rolling(200).mean() # فیلتر روند بلندمدت
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-
-# Donchian (breakout واقعی)
 df["DonHigh"] = df["High"].rolling(20).max().shift(1)
+df["VolMA"] = df["Volume"].rolling(20).mean() # میانگین حجم
+
+# RSI Calculation
+delta = df["Close"].diff()
+gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+rs = gain / loss
+df["RSI"] = 100 - (100 / (1 + rs))
 
 # ======================
 # INIT
@@ -63,79 +69,66 @@ highest = 0
 last_trade_i = -100
 
 # ======================
-# LOOP
+# LOOP (منطق حرفه‌ای ورود و خروج)
 # ======================
-for i in range(60, len(df)):
+for i in range(50, len(df)):
 
     close = df["Close"].iloc[i]
     high = df["High"].iloc[i]
     low = df["Low"].iloc[i]
-
+    vol = df["Volume"].iloc[i]
+    rsi = df["RSI"].iloc[i]
     ma50 = df["MA50"].iloc[i]
+    ma200 = df["MA200"].iloc[i]
     atr = df["ATR"].iloc[i]
     don_high = df["DonHigh"].iloc[i]
 
-    # شیب MA50
-    ma_slope = df["MA50"].iloc[i] - df["MA50"].iloc[i-5]
-
-    # ATR%
-    atr_pct = atr / close
-
     # ======================
-    # ENTRY (فقط ستاپ قوی)
+    # ENTRY LOGIC
     # ======================
     if not in_position:
-
-        # کول‌دان برای جلوگیری از اورترید
-        if i - last_trade_i < 10:
-            continue
-
-        cond_trend = close > ma50 and ma_slope > 0
+        
+        # شرط ۱: تایید روند (قیمت بالای هر دو میانگین و شیب مثبت)
+        cond_trend = close > ma50 and ma50 > ma200
+        # شرط ۲: شکست سقف کانال دونچیان
         cond_breakout = close > don_high
-        cond_vol = atr_pct > 0.002  # بازار فعال
+        # شرط ۳: تایید حجم (حجم باید بیشتر از میانگین باشد - فرار از تله)
+        cond_vol = vol > df["VolMA"].iloc[i] * 1.2
+        # شرط ۴: RSI در محدوده قدرت (نه اشباع خرید)
+        cond_rsi = 50 < rsi < 70
 
-        # فاصله تا سقف 50 کندلی (نخریدن خیلی نزدیک سقف)
-        recent_res = df["High"].iloc[i-50:i].max()
-        dist_res = (recent_res - close) / close
-
-        if cond_trend and cond_breakout and cond_vol and dist_res > 0.01:
-
-            entry_price = close
-
-            # SL کوچک
-            sl = entry_price - atr * 0.5
-
-            highest = entry_price
-            in_position = True
-            last_trade_i = i
-
-            df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
+        if cond_trend and cond_breakout and cond_vol and cond_rsi:
+            if i - last_trade_i > 5: # کاهش کول‌دان برای شکار فرصت‌ها
+                entry_price = close
+                # حد ضرر داینامیک بر اساس نوسان بازار
+                sl = entry_price - (atr * 2.0) 
+                highest = entry_price
+                in_position = True
+                df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
 
     # ======================
-    # HOLD
+    # EXIT LOGIC (تریلینگ هوشمند)
     # ======================
     else:
-
         df.iloc[i, df.columns.get_loc("Signal")] = "HOLD"
-
+        
         if high > highest:
             highest = high
 
-        # trailing بعد از 2% سود فعال
-        if highest > entry_price * 1.02:
-            sl = max(sl, highest * 0.97)
-
-        exit_price = None
-
-        # فقط SL
+        # تریلینگ استاپ تهاجمی: اگر سود > 4% شد، استاپ را به 2% زیر سقف ببر
+        if highest > entry_price * 1.04:
+            sl = max(sl, highest * 0.98)
+        
+        # خروج اضطراری: اگر RSI به شدت ریزش کرد (نشانه تغییر روند سریع)
+        exit_signal = False
         if low <= sl:
             exit_price = sl
+            exit_signal = True
+        elif rsi < 45: # خروج زودهنگام در صورت ضعف مومنتوم
+            exit_price = close
+            exit_signal = True
 
-        # ======================
-        # EXIT → PnL
-        # ======================
-        if exit_price is not None:
-
+        if exit_signal:
             raw = (exit_price - entry_price) / entry_price
             net = (1 + raw) * (1 - fee)**2 - 1
 
@@ -150,11 +143,11 @@ for i in range(60, len(df)):
                 total_loss += abs(net)
 
             df.iloc[i, df.columns.get_loc("PnL")] = net * 100
-
             in_position = False
+            last_trade_i = i
 
 # ======================
-# METRICS
+# METRICS (قالب درخواستی شما)
 # ======================
 final_balance = capital * balance
 winrate = (wins / trades * 100) if trades else 0
@@ -170,7 +163,7 @@ c4.metric("Wins / Losses", f"{wins} / {losses}")
 c5.metric("Total Profit %", f"{total_profit*100:.2f}%")
 c6.metric("Total Loss %", f"{total_loss*100:.2f}%")
 
-st.metric("Balance", f"${final_balance:,.2f}")
+st.metric("Final Balance", f"${final_balance:,.2f}")
 
 st.divider()
 st.dataframe(df.sort_index(ascending=False), use_container_width=True, height=600)
