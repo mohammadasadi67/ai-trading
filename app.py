@@ -12,7 +12,7 @@ st.title("Smart Trading System")
 # ======================
 capital = st.sidebar.number_input("Capital ($)", value=1000.0)
 fee = st.sidebar.slider("Exchange Fee (%)", 0.0, 0.5, 0.1) / 100
-start_date = st.sidebar.date_input("Start Date", value=date(2024,1,1))
+start_date = st.sidebar.date_input("Start Date", value=date(2023,1,1))
 
 # ======================
 # DATA
@@ -20,7 +20,7 @@ start_date = st.sidebar.date_input("Start Date", value=date(2024,1,1))
 @st.cache_data
 def get_data():
     url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 500}
+    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 5000}
     data = requests.get(url, params=params, timeout=10).json()
 
     df = pd.DataFrame(data, columns=[
@@ -88,7 +88,7 @@ if not in_pos:
     distance = (close - ema20) / ema20
 
     # نزدیک EMA باشه
-    near_ema = abs(distance) < 0.015
+    near_ema = abs(distance) < 0.025
 
     # مومنتوم مثبت
     momentum = close > df["Close"].iloc[i-1]
