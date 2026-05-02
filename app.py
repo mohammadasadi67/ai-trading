@@ -5,12 +5,12 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("SPOT POSITION SYSTEM (HOLD + TRAILING ONLY)")
+st.title("SPOT POSITION SYSTEM (PRO ENTRY + HOLD)")
 
 # ======================
 # DATA
 # ======================
-def get_data(interval="4h", limit=800):
+def get_data(interval="4h", limit=1000):
     url = "https://data-api.binance.vision/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": interval, "limit": limit}
     data = requests.get(url, params=params).json()
@@ -34,17 +34,17 @@ capital = st.sidebar.number_input("Capital", value=1000.0)
 fee = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
 start_date = st.sidebar.date_input("Start", value=date(2024,1,1))
 
-# ======================
-# LOAD
-# ======================
-df = get_data("4h", 800)
+df = get_data("4h", 1000)
 df = df[df.index.date >= start_date].copy()
 
 # ======================
 # INDICATORS
 # ======================
-df["MA20"] = df["Close"].rolling(20).mean()
+df["MA50"] = df["Close"].rolling(50).mean()
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
+
+# Donchian (breakout واقعی)
+df["DonHigh"] = df["High"].rolling(20).max().shift(1)
 
 # ======================
 # INIT
@@ -53,44 +53,61 @@ df["Signal"] = "WAIT"
 df["PnL"] = np.nan
 
 balance = 1.0
-trades = 0
-wins = 0
-losses = 0
-total_profit = 0
-total_loss = 0
+trades = wins = losses = 0
+total_profit = total_loss = 0
 
 in_position = False
 entry_price = 0
 sl = 0
 highest = 0
+last_trade_i = -100
 
 # ======================
 # LOOP
 # ======================
-for i in range(30, len(df)):
+for i in range(60, len(df)):
 
     close = df["Close"].iloc[i]
     high = df["High"].iloc[i]
     low = df["Low"].iloc[i]
-    ma = df["MA20"].iloc[i]
+
+    ma50 = df["MA50"].iloc[i]
     atr = df["ATR"].iloc[i]
+    don_high = df["DonHigh"].iloc[i]
+
+    # شیب MA50
+    ma_slope = df["MA50"].iloc[i] - df["MA50"].iloc[i-5]
+
+    # ATR%
+    atr_pct = atr / close
 
     # ======================
-    # ENTRY
+    # ENTRY (فقط ستاپ قوی)
     # ======================
     if not in_position:
 
-        recent_high = df["High"].iloc[i-8:i].max()
+        # کول‌دان برای جلوگیری از اورترید
+        if i - last_trade_i < 10:
+            continue
 
-        if close > ma and close > recent_high:
+        cond_trend = close > ma50 and ma_slope > 0
+        cond_breakout = close > don_high
+        cond_vol = atr_pct > 0.002  # بازار فعال
+
+        # فاصله تا سقف 50 کندلی (نخریدن خیلی نزدیک سقف)
+        recent_res = df["High"].iloc[i-50:i].max()
+        dist_res = (recent_res - close) / close
+
+        if cond_trend and cond_breakout and cond_vol and dist_res > 0.01:
 
             entry_price = close
 
-            # ❗ SL کوچک‌تر (کنترل ضرر)
+            # SL کوچک
             sl = entry_price - atr * 0.5
 
             highest = entry_price
             in_position = True
+            last_trade_i = i
 
             df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
 
@@ -101,24 +118,21 @@ for i in range(30, len(df)):
 
         df.iloc[i, df.columns.get_loc("Signal")] = "HOLD"
 
-        # آپدیت سقف
         if high > highest:
             highest = high
 
-        # ❗ Trailing واقعی (درصدی)
+        # trailing بعد از 2% سود فعال
         if highest > entry_price * 1.02:
-            sl = max(sl, highest * 0.97)  # 3% اصلاح
+            sl = max(sl, highest * 0.97)
 
         exit_price = None
 
-        # ======================
-        # EXIT فقط با SL
-        # ======================
+        # فقط SL
         if low <= sl:
             exit_price = sl
 
         # ======================
-        # EXIT → فقط PnL
+        # EXIT → PnL
         # ======================
         if exit_price is not None:
 
