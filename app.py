@@ -78,25 +78,42 @@ df["RSI"] = 100 - (100 / (1 + (gain/loss)))
 # ======================
 # ENGINE (SUPER WHALE V16)
 # ======================
-df["Action"] = "WAIT"
-df["PnL"] = 0.0
-
-balance = 1.0
-in_pos = False
-entry = sl = highest = 0
-
+# ======================
+# ENGINE (ULTIMATE HOLDER MODE)
+# ======================
 for i in range(200, len(df)):
     t = df.index[i]
-    c, h, l = df["Close"].iloc[i], df["High"].iloc[i], df["Low"].iloc[i]
-    rsi, ma50, ma200, atr = df["RSI"].iloc[i], df["MA50"].iloc[i], df["MA200"].iloc[i], df["ATR"].iloc[i]
+    c, l = df["Close"].iloc[i], df["Low"].iloc[i]
+    ma200 = df["MA200"].iloc[i]
 
-    # ENTRY
     if not in_pos and (start_dt <= t.date() <= end_dt):
-        # فیلتر قوی‌تر برای ورود (RSI > 55)
-        if c > ma50 > ma200 and rsi > 55:
-            entry, highest, in_pos = c, c, True
-            sl = entry - (atr * 3.0) # استاپ عریض‌تر برای بقا در نوسان
+        # ورود فقط وقتی بازار در روند صعودی کلان است
+        if c > ma200:
+            entry = c
+            # استاپ‌لاس وحشتناک عریض (۲۰٪ زیر قیمت خرید)
+            # این یعنی مثل یک هولدر صبوری کن
+            sl = entry * 0.80 
+            in_pos = True
             df.iloc[i, df.columns.get_loc("Action")] = "BUY"
+
+    elif in_pos:
+        df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
+        
+        # فقط وقتی قیمت خیلی بالا رفت، استاپ را کمی بالا بیار (قفل سود در ۵۰٪ رشد)
+        if c > entry * 1.50:
+            sl = max(sl, entry * 1.10)
+
+        exit_p = 0
+        # خروج فقط اگر قیمت ۲۰٪ ریخت یا زیر MA200 رفت (فاجعه صعود)
+        if l <= sl or c < ma200:
+            exit_p = c
+
+        if exit_p > 0:
+            pnl_val = ((exit_p - entry) / entry) - (fee * 2)
+            balance *= (1 + pnl_val)
+            df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
+            df.iloc[i, df.columns.get_loc("PnL")] = pnl_val * 100
+            in_pos = False
 
     # HOLD & EXIT
     elif in_pos:
