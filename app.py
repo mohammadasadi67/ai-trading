@@ -5,7 +5,7 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("SPOT SWING SYSTEM (HOLD SMART MODE)")
+st.title("SPOT SWING SYSTEM (POSITION HOLD MODE)")
 
 # ======================
 # DATA
@@ -35,7 +35,6 @@ fee = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
 start_date = st.sidebar.date_input("Start", value=date(2024,1,1))
 
 df = get_data("4h", 800)
-df_daily = get_data("1d", 400)
 df = df[df.index.date >= start_date].copy()
 
 # ======================
@@ -43,19 +42,6 @@ df = df[df.index.date >= start_date].copy()
 # ======================
 df["MA20"] = df["Close"].rolling(20).mean()
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-df_daily["MA20"] = df_daily["Close"].rolling(20).mean()
-
-# ======================
-# SUPPORT / RESISTANCE
-# ======================
-def pivots(df, w=5):
-    highs = df["High"]
-    lows = df["Low"]
-    piv_high = highs[(highs.shift(w) < highs) & (highs.shift(-w) < highs)]
-    piv_low = lows[(lows.shift(w) > lows) & (lows.shift(-w) > lows)]
-    return piv_low.dropna(), piv_high.dropna()
-
-supports, resistances = pivots(df)
 
 # ======================
 # VARIABLES
@@ -66,107 +52,94 @@ wins = 0
 losses = 0
 total_profit = 0
 total_loss = 0
-last_trade_index = -50
+
+in_position = False
+entry_price = 0
+sl = 0
+highest = 0
 
 df["Signal"] = "WAIT"
 df["PnL"] = np.nan
-df["Confidence"] = 0.0
 
 # ======================
-# SCORE (RL-like)
+# LOOP
 # ======================
-def score(i):
-    s = 0
-    if df["Close"].iloc[i] > df["MA20"].iloc[i]:
-        s += 1
-    if df_daily["Close"].iloc[-1] > df_daily["MA20"].iloc[-1]:
-        s += 1
-    if df["Close"].iloc[i] > df["High"].iloc[i-8:i].max():
-        s += 1
-    if len(supports) > 0:
-        dist = (df["Close"].iloc[i] - supports.iloc[-1]) / df["Close"].iloc[i]
-        if dist < 0.02:
-            s += 1
-    return s
+for i in range(30, len(df)):
 
-# ======================
-# STRATEGY
-# ======================
-for i in range(30, len(df)-1):
-
-    if i - last_trade_index < 10:
-        continue
-
-    sc = score(i)
-    if sc < 4:
-        continue
-
-    entry = df["Close"].iloc[i]
+    close = df["Close"].iloc[i]
+    high = df["High"].iloc[i]
+    low = df["Low"].iloc[i]
+    ma = df["MA20"].iloc[i]
     atr = df["ATR"].iloc[i]
 
-    # جلوگیری از خرید نزدیک مقاومت
-    if len(resistances) > 0:
-        dist_r = (resistances.iloc[-1] - entry) / entry
-        if dist_r < 0.02:
-            continue
+    # ======================
+    # ENTRY
+    # ======================
+    if not in_position:
 
-    sl = entry - atr * 0.6
-    tp = entry + atr * 3   # دور → برای رشد
+        # breakout ساده + روند
+        recent_high = df["High"].iloc[i-8:i].max()
 
-    highest = entry
-    exit_price = entry
+        if close > ma and close > recent_high:
 
-    # 🔥 HOLD واقعی (تا هرجا لازم شد)
-    for j in range(i+1, len(df)):
+            entry_price = close
+            sl = entry_price - atr * 0.7
+            highest = entry_price
 
-        high = df["High"].iloc[j]
-        low = df["Low"].iloc[j]
+            in_position = True
+            df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
 
+    # ======================
+    # HOLD
+    # ======================
+    else:
+
+        # آپدیت سقف
         if high > highest:
             highest = high
 
-        # trailing پله‌ای
-        if highest > entry * 1.02:
-            trail = highest - atr * 0.8
-        elif highest > entry * 1.01:
-            trail = highest - atr * 1.0
+        # trailing فقط وقتی سود داریم
+        if highest > entry_price * 1.03:
+            trail = highest * 0.97
         else:
             trail = sl
 
-        # خروج‌ها
-        if low <= sl:
+        trend_ok = close > ma
+
+        exit_price = None
+
+        # شرایط خروج
+        if not trend_ok:
+            exit_price = close
+
+        elif low <= sl:
             exit_price = sl
-            break
 
-        if low <= trail:
+        elif low <= trail:
             exit_price = trail
-            break
 
-        if high >= tp:
-            exit_price = tp
-            break
+        # ======================
+        # EXIT → فقط اینجا PnL حساب میشه
+        # ======================
+        if exit_price is not None:
 
-        exit_price = df["Close"].iloc[j]
+            raw = (exit_price - entry_price) / entry_price
+            net = (1 + raw) * (1 - fee)**2 - 1
 
-    pnl = (exit_price - entry) / entry
-    net = (1 + pnl) * (1 - fee)**2 - 1
+            trades += 1
+            balance *= (1 + net)
 
-    trades += 1
-    balance *= (1 + net)
-    last_trade_index = i
+            if net > 0:
+                wins += 1
+                total_profit += net
+            else:
+                losses += 1
+                total_loss += abs(net)
 
-    if net > 0:
-        wins += 1
-        total_profit += net
-    else:
-        losses += 1
-        total_loss += abs(net)
+            df.iloc[i, df.columns.get_loc("Signal")] = "SELL"
+            df.iloc[i, df.columns.get_loc("PnL")] = net * 100
 
-    df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
-    df.iloc[i, df.columns.get_loc("PnL")] = net * 100
-
-    conf = (sc / 4) * (atr / entry * 100)
-    df.iloc[i, df.columns.get_loc("Confidence")] = min(conf, 1)
+            in_position = False
 
 # ======================
 # METRICS
