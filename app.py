@@ -5,7 +5,7 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("SPOT SWING SYSTEM (SR + RL-LIKE)")
+st.title("SPOT SWING SYSTEM (CONTROLLED RL-LIKE)")
 
 # ======================
 # DATA
@@ -36,7 +36,6 @@ start_date = st.sidebar.date_input("Start", value=date(2024,1,1))
 
 df = get_data("4h", 800)
 df_daily = get_data("1d", 400)
-
 df = df[df.index.date >= start_date].copy()
 
 # ======================
@@ -44,13 +43,12 @@ df = df[df.index.date >= start_date].copy()
 # ======================
 df["MA20"] = df["Close"].rolling(20).mean()
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-
 df_daily["MA20"] = df_daily["Close"].rolling(20).mean()
 
 # ======================
-# SUPPORT / RESISTANCE (Pivot)
+# PIVOTS (SR)
 # ======================
-def get_pivots(df, w=5):
+def pivots(df, w=5):
     highs = df["High"]
     lows = df["Low"]
 
@@ -59,10 +57,10 @@ def get_pivots(df, w=5):
 
     return piv_low.dropna(), piv_high.dropna()
 
-supports, resistances = get_pivots(df)
+supports, resistances = pivots(df)
 
 # ======================
-# STRATEGY VARIABLES
+# VARIABLES
 # ======================
 balance = 1.0
 trades = 0
@@ -71,30 +69,28 @@ losses = 0
 total_profit = 0
 total_loss = 0
 
+last_trade_index = -50
+
 df["Signal"] = "WAIT"
 df["PnL"] = np.nan
 df["Confidence"] = 0.0
 
 # ======================
-# RL-LIKE SCORE
+# SCORE FUNCTION
 # ======================
 def score(i):
     s = 0
 
-    # روند 4H
     if df["Close"].iloc[i] > df["MA20"].iloc[i]:
         s += 1
 
-    # روند Daily
     if df_daily["Close"].iloc[-1] > df_daily["MA20"].iloc[-1]:
         s += 1
 
-    # breakout
     recent_high = df["High"].iloc[i-8:i].max()
     if df["Close"].iloc[i] > recent_high:
         s += 1
 
-    # نزدیک ساپورت
     if len(supports) > 0:
         nearest = supports.iloc[-1]
         dist = (df["Close"].iloc[i] - nearest) / df["Close"].iloc[i]
@@ -108,22 +104,34 @@ def score(i):
 # ======================
 for i in range(30, len(df)-1):
 
+    # ⛔ جلوگیری از overtrading
+    if i - last_trade_index < 10:
+        continue
+
     sc = score(i)
 
-    # تصمیم RL-like
-    if sc < 3:
+    # 🔥 فقط بهترین شرایط
+    if sc < 4:
         continue
 
     entry = df["Close"].iloc[i]
     atr = df["ATR"].iloc[i]
 
-    sl = entry - atr
-    tp = entry + atr * 3
+    # ⛔ نخریدن نزدیک مقاومت
+    if len(resistances) > 0:
+        nearest_r = resistances.iloc[-1]
+        dist_r = (nearest_r - entry) / entry
+        if dist_r < 0.015:
+            continue
+
+    # SL / TP بهینه
+    sl = entry - atr * 0.7
+    tp = entry + atr * 1.8
 
     highest = entry
     exit_price = entry
 
-    # 🔓 HOLD (آزاد)
+    # HOLD
     for j in range(i+1, len(df)):
 
         high = df["High"].iloc[j]
@@ -132,7 +140,11 @@ for i in range(30, len(df)-1):
         if high > highest:
             highest = high
 
-        trail = highest - atr
+        # trailing فعال بعد از سود
+        if highest > entry * 1.01:
+            trail = highest - atr * 0.7
+        else:
+            trail = sl
 
         if low <= sl:
             exit_price = sl
@@ -148,14 +160,13 @@ for i in range(30, len(df)-1):
 
         exit_price = df["Close"].iloc[j]
 
-    # ======================
     # RESULT
-    # ======================
     pnl = (exit_price - entry) / entry
     net = (1 + pnl) * (1 - fee)**2 - 1
 
     trades += 1
     balance *= (1 + net)
+    last_trade_index = i
 
     if net > 0:
         wins += 1
@@ -167,9 +178,8 @@ for i in range(30, len(df)-1):
     df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
     df.iloc[i, df.columns.get_loc("PnL")] = net * 100
 
-    # confidence
-    conf = sc / 4
-    df.iloc[i, df.columns.get_loc("Confidence")] = conf
+    conf = (sc / 4) * (atr / entry * 100)
+    df.iloc[i, df.columns.get_loc("Confidence")] = min(conf, 1)
 
 # ======================
 # METRICS
