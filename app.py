@@ -5,10 +5,10 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("Smart Trading System")
+st.title("Smart Trading System (Donchian + Trend)")
 
 # ======================
-# SIDEBAR (تنظیمات)
+# SIDEBAR
 # ======================
 capital = st.sidebar.number_input("Capital ($)", value=1000.0)
 fee = st.sidebar.slider("Exchange Fee (%)", 0.0, 0.5, 0.1) / 100
@@ -20,7 +20,7 @@ start_date = st.sidebar.date_input("Start Date", value=date(2023,1,1))
 @st.cache_data
 def get_data():
     url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 5000}
+    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 1000}
     data = requests.get(url, params=params, timeout=10).json()
 
     df = pd.DataFrame(data, columns=[
@@ -36,26 +36,27 @@ def get_data():
     return df.astype(float)
 
 df = get_data()
-
-# فیلتر تاریخ
 df = df[df.index.date >= start_date]
+
+if len(df) < 100:
+    st.warning("Not enough data")
+    st.stop()
 
 # ======================
 # INDICATORS
 # ======================
-df["EMA20"] = df["Close"].ewm(span=20).mean()
 df["EMA50"] = df["Close"].ewm(span=50).mean()
-
-# ATR
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
 
+# Donchian (20)
+df["DonHigh"] = df["High"].rolling(20).max().shift(1)
+
 # ======================
-# BACKTEST (بهبود یافته)
+# BACKTEST
 # ======================
 balance = 1.0
 trades = wins = losses = 0
-total_profit = 0
-total_loss = 0
+total_profit = total_loss = 0
 
 in_pos = False
 entry = 0
@@ -71,36 +72,21 @@ for i in range(50, len(df)):
     high = df["High"].iloc[i]
     low = df["Low"].iloc[i]
 
-    ema20 = df["EMA20"].iloc[i]
     ema50 = df["EMA50"].iloc[i]
     atr = df["ATR"].iloc[i]
+    don_high = df["DonHigh"].iloc[i]
 
     # ======================
- # ======================
-# ======================
-# ENTRY (SMART PULLBACK)
-# ======================
-if not in_pos:
+    # ENTRY (Breakout واقعی)
+    # ======================
+    if not in_pos:
+        if close > ema50 and close > don_high:
+            entry = close
+            sl = entry - atr * 1.0
+            highest = entry
+            in_pos = True
+            df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
 
-    trend = ema20 > ema50
-
-    # فاصله از EMA20 (نه خیلی بالا، نه خیلی پایین)
-    distance = (close - ema20) / ema20
-
-    # نزدیک EMA باشه
-    near_ema = abs(distance) < 0.025
-
-    # مومنتوم مثبت
-    momentum = close > df["Close"].iloc[i-1]
-
-    if trend and near_ema and momentum:
-
-        entry = close
-        sl = entry - atr * 0.7
-        highest = entry
-        in_pos = True
-
-        df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
     # ======================
     # HOLD
     # ======================
@@ -110,9 +96,9 @@ if not in_pos:
         if high > highest:
             highest = high
 
-        # trailing
-        if highest > entry * 1.03:
-            sl = max(sl, highest * 0.96)
+        # trailing بعد از 2%
+        if highest > entry * 1.02:
+            sl = max(sl, highest * 0.97)
 
         exit_price = None
 
