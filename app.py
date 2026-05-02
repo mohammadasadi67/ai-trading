@@ -5,23 +5,15 @@ import requests
 from datetime import date
 
 st.set_page_config(layout="wide")
-st.title("Smart Trading System (Donchian + Trend)")
-
-# ======================
-# SIDEBAR
-# ======================
-capital = st.sidebar.number_input("Capital ($)", value=1000.0)
-fee = st.sidebar.slider("Exchange Fee (%)", 0.0, 0.5, 0.1) / 100
-start_date = st.sidebar.date_input("Start Date", value=date(2023,1,1))
+st.title("TREND SYSTEM (EMA + ADX + ATR)")
 
 # ======================
 # DATA
 # ======================
-@st.cache_data
 def get_data():
     url = "https://data-api.binance.vision/api/v3/klines"
     params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 1000}
-    data = requests.get(url, params=params, timeout=10).json()
+    data = requests.get(url, params=params).json()
 
     df = pd.DataFrame(data, columns=[
         "time","open","high","low","close","volume",
@@ -36,69 +28,86 @@ def get_data():
     return df.astype(float)
 
 df = get_data()
-df = df[df.index.date >= start_date]
-
-if len(df) < 100:
-    st.warning("Not enough data")
-    st.stop()
 
 # ======================
 # INDICATORS
 # ======================
 df["EMA50"] = df["Close"].ewm(span=50).mean()
+df["EMA200"] = df["Close"].ewm(span=200).mean()
+
+# ATR
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
 
-# Donchian (20)
-df["DonHigh"] = df["High"].rolling(20).max().shift(1)
+# ADX ساده
+up = df["High"].diff()
+down = -df["Low"].diff()
+
+plus_dm = np.where((up > down) & (up > 0), up, 0)
+minus_dm = np.where((down > up) & (down > 0), down, 0)
+
+tr = np.maximum(df["High"] - df["Low"],
+     np.maximum(abs(df["High"] - df["Close"].shift()),
+                abs(df["Low"] - df["Close"].shift())))
+
+atr = pd.Series(tr).rolling(14).mean()
+
+plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / atr)
+minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / atr)
+
+dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100
+df["ADX"] = dx.rolling(14).mean()
 
 # ======================
 # BACKTEST
 # ======================
 balance = 1.0
 trades = wins = losses = 0
-total_profit = total_loss = 0
-
-in_pos = False
+in_position = False
 entry = 0
 sl = 0
 highest = 0
 
-df["Signal"] = ""
+df["Signal"] = "WAIT"
 df["PnL"] = np.nan
 
-for i in range(50, len(df)):
+for i in range(200, len(df)):
 
     close = df["Close"].iloc[i]
     high = df["High"].iloc[i]
     low = df["Low"].iloc[i]
 
     ema50 = df["EMA50"].iloc[i]
+    ema200 = df["EMA200"].iloc[i]
     atr = df["ATR"].iloc[i]
-    don_high = df["DonHigh"].iloc[i]
+    adx = df["ADX"].iloc[i]
 
     # ======================
-    # ENTRY (Breakout واقعی)
+    # ENTRY
     # ======================
-    if not in_pos:
-        if close > ema50 and close > don_high:
+    if not in_position:
+
+        if close > ema50 > ema200 and adx > 20:
+
             entry = close
-            sl = entry - atr * 1.0
+            sl = entry - atr * 1.5
             highest = entry
-            in_pos = True
+
+            in_position = True
             df.iloc[i, df.columns.get_loc("Signal")] = "BUY"
 
     # ======================
     # HOLD
     # ======================
     else:
+
         df.iloc[i, df.columns.get_loc("Signal")] = "HOLD"
 
         if high > highest:
             highest = high
 
-        # trailing بعد از 2%
+        # trailing
         if highest > entry * 1.02:
-            sl = max(sl, highest * 0.97)
+            sl = max(sl, highest - atr * 1.5)
 
         exit_price = None
 
@@ -107,40 +116,28 @@ for i in range(50, len(df)):
 
         if exit_price is not None:
 
-            raw = (exit_price - entry) / entry
-            net = (1 + raw) * (1 - fee)**2 - 1
+            pnl = (exit_price - entry) / entry
 
-            balance *= (1 + net)
+            balance *= (1 + pnl)
             trades += 1
 
-            if net > 0:
+            if pnl > 0:
                 wins += 1
-                total_profit += net
             else:
                 losses += 1
-                total_loss += abs(net)
 
-            df.iloc[i, df.columns.get_loc("PnL")] = net * 100
-            in_pos = False
+            df.iloc[i, df.columns.get_loc("PnL")] = pnl * 100
+
+            in_position = False
 
 # ======================
-# METRICS
+# RESULTS
 # ======================
-final_balance = capital * balance
-winrate = (wins / trades * 100) if trades else 0
-net_profit = (balance - 1) * 100
+winrate = wins / trades * 100 if trades else 0
+profit = (balance - 1) * 100
 
-c1, c2, c3 = st.columns(3)
-c1.metric("Trades", trades)
-c2.metric("Winrate", f"{winrate:.2f}%")
-c3.metric("Net Profit %", f"{net_profit:.2f}%")
+st.metric("Trades", trades)
+st.metric("Winrate", f"{winrate:.2f}%")
+st.metric("Profit %", f"{profit:.2f}%")
 
-c4, c5, c6 = st.columns(3)
-c4.metric("Wins / Losses", f"{wins}/{losses}")
-c5.metric("Total Profit %", f"{total_profit*100:.2f}%")
-c6.metric("Total Loss %", f"{total_loss*100:.2f}%")
-
-st.metric("Final Balance", f"${final_balance:,.2f}")
-
-st.divider()
-st.dataframe(df.tail(150), use_container_width=True)
+st.dataframe(df.tail(200))
