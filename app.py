@@ -18,6 +18,7 @@ def get_data(start_str="2023-01-01"):
         "https://data-api.binance.vision/api/v3/klines"
     ]
     start_ts = int(pd.Timestamp(start_str).timestamp() * 1000)
+    all_data = []
 
     for url in endpoints:
         all_data = []
@@ -52,7 +53,7 @@ with st.sidebar:
     st.divider()
     capital = st.number_input("سرمایه اولیه ($)", value=1000.0)
     fee = st.slider("Fee (%)", 0.0, 0.5, 0.05) / 100
-    st.warning("توجه: این استراتژی برای شکار روندهای بزرگ (Trend Following) است.")
+    st.info("حالت: Ultimate Holder (مخصوص ۲۰۲۶)")
 
 # ======================
 # LOAD & PROCESS
@@ -65,47 +66,43 @@ if df_raw.empty:
     st.stop()
 
 df = df_raw.copy()
-df["MA50"] = df["Close"].rolling(50).mean()
 df["MA200"] = df["Close"].rolling(200).mean()
-df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-
-# RSI
-delta = df["Close"].diff()
-gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-df["RSI"] = 100 - (100 / (1 + (gain/loss)))
+df["Action"] = "WAIT"
+df["PnL"] = 0.0
 
 # ======================
-# ENGINE (SUPER WHALE V16)
+# ENGINE (ULTIMATE HOLDER - ANTI-LOSS 2026)
 # ======================
-# ======================
-# ENGINE (ULTIMATE HOLDER MODE)
-# ======================
+balance = 1.0
+in_pos = False
+entry = sl = 0
+
 for i in range(200, len(df)):
     t = df.index[i]
     c, l = df["Close"].iloc[i], df["Low"].iloc[i]
     ma200 = df["MA200"].iloc[i]
 
     if not in_pos and (start_dt <= t.date() <= end_dt):
-        # ورود فقط وقتی بازار در روند صعودی کلان است
+        # ورود فقط در تایید روند صعودی کلان
         if c > ma200:
             entry = c
-            # استاپ‌لاس وحشتناک عریض (۲۰٪ زیر قیمت خرید)
-            # این یعنی مثل یک هولدر صبوری کن
-            sl = entry * 0.80 
+            # استاپ عریض (۱۵٪) برای تحمل نوسانات رنج ۲۰۲۶
+            sl = entry * 0.85 
             in_pos = True
             df.iloc[i, df.columns.get_loc("Action")] = "BUY"
 
     elif in_pos:
         df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
         
-        # فقط وقتی قیمت خیلی بالا رفت، استاپ را کمی بالا بیار (قفل سود در ۵۰٪ رشد)
-        if c > entry * 1.50:
-            sl = max(sl, entry * 1.10)
+        # بالا بردن پله‌ای استاپ فقط در سودهای بزرگ
+        if c > entry * 1.20:
+            sl = max(sl, entry * 1.05) # ریسک فری + کمی سود
 
         exit_p = 0
-        # خروج فقط اگر قیمت ۲۰٪ ریخت یا زیر MA200 رفت (فاجعه صعود)
-        if l <= sl or c < ma200:
+        # خروج فقط با استاپ عریض یا شکستن فاجعه‌بار میانگین ۲۰۰
+        if l <= sl:
+            exit_p = sl
+        elif c < ma200 * 0.98: # خروج با تایید شکست روند
             exit_p = c
 
         if exit_p > 0:
@@ -113,26 +110,6 @@ for i in range(200, len(df)):
             balance *= (1 + pnl_val)
             df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
             df.iloc[i, df.columns.get_loc("PnL")] = pnl_val * 100
-            in_pos = False
-
-    # HOLD & EXIT
-    elif in_pos:
-        df.iloc[i, df.columns.get_loc("Action")] = "HOLD"
-        highest = max(highest, h)
-
-        # Trailing Stop پله‌ای
-        if highest > entry * 1.05: sl = max(sl, entry) # Risk free
-        if highest > entry * 1.15: sl = max(sl, highest * 0.90) # Profit Lock 10%
-        if highest > entry * 1.30: sl = max(sl, highest * 0.85) # Profit Lock 15%
-
-        exit_p = 0
-        if l <= sl: exit_p = sl
-        
-        if exit_p > 0:
-            pnl_raw = ((exit_p - entry) / entry) - (fee * 2)
-            balance *= (1 + pnl_raw)
-            df.iloc[i, df.columns.get_loc("Action")] = "EXIT"
-            df.iloc[i, df.columns.get_loc("PnL")] = pnl_raw * 100
             in_pos = False
 
 # ======================
@@ -154,8 +131,6 @@ c2.metric("Final Balance", f"${capital * balance:,.2f}")
 c3.metric("Total Trades", len(df[df["Action"] == "EXIT"]))
 
 st.divider()
-st.subheader("📊 Trade & Daily Report")
-
 def color_action(val):
     colors = {"BUY": "#2ecc71", "EXIT": "#e74c3c", "HOLD": "#3498db", "WAIT": "#95a5a6"}
     return f"background-color: {colors.get(val, 'gray')}; color: white; font-weight: bold"
