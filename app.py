@@ -20,86 +20,72 @@ start_date = pd.to_datetime(st.sidebar.date_input("📅 Start", datetime(2023,1,
 end_date = pd.to_datetime(st.sidebar.date_input("📅 End", datetime.now()))
 
 # ======================
-# SAFE FETCH (🔥 FIX)
+# SAFE CHUNK FETCH (🔥)
 # ======================
 @st.cache_data(ttl=3600)
-def fetch_data(symbol, interval, start_dt, end_dt):
+def fetch_data_chunked(symbol="BTCUSDT", interval="1h", chunks=20):
 
     url = "https://api.binance.com/api/v3/klines"
     all_data = []
 
-    start_ts = int(start_dt.timestamp() * 1000)
-    end_ts = int(end_dt.timestamp() * 1000)
+    end_time = None
 
-    current_ts = start_ts
-    last_ts = None
+    for i in range(chunks):
 
-    p_bar = st.sidebar.progress(0)
-    p_text = st.sidebar.empty()
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": 1000
+        }
 
-    max_loops = 200
-    loops = 0
+        if end_time:
+            params["endTime"] = end_time
 
-    with requests.Session() as session:
+        try:
+            res = requests.get(url, params=params, timeout=10)
 
-        while current_ts < end_ts and loops < max_loops:
-            loops += 1
+            if res.status_code != 200:
+                break
 
-            try:
-                params = {
-                    "symbol": symbol,
-                    "interval": interval,
-                    "startTime": current_ts,
-                    "limit": 1000
-                }
+            data = res.json()
 
-                res = session.get(url, params=params, timeout=10)
+            if not isinstance(data, list) or len(data) == 0:
+                break
 
-                if res.status_code != 200:
-                    time.sleep(1)
-                    continue
+            all_data.extend(data)
 
-                data = res.json()
+            # حرکت به عقب (بدون loop خطرناک)
+            end_time = data[0][0] - 1
 
-                if not isinstance(data, list) or len(data) == 0:
-                    break
+            time.sleep(0.05)
 
-                # جلوگیری از گیر
-                if last_ts == data[-1][0]:
-                    break
+        except:
+            break
 
-                last_ts = data[-1][0]
-
-                all_data.extend(data)
-                current_ts = data[-1][0] + 1
-
-                progress = min(1.0, (current_ts - start_ts) / (end_ts - start_ts))
-                p_bar.progress(progress)
-                p_text.text(f"📥 {pd.to_datetime(current_ts, unit='ms')}")
-
-                time.sleep(0.05)
-
-            except:
-                time.sleep(1)
-
-    if not all_data:
+    if len(all_data) == 0:
         return pd.DataFrame()
 
     df = pd.DataFrame(all_data).iloc[:, :6]
     df.columns = ["Time","Open","High","Low","Close","Volume"]
+
     df["Time"] = pd.to_datetime(df["Time"], unit="ms")
     df.set_index("Time", inplace=True)
+
+    df = df.sort_index()
 
     return df.astype(float)
 
 # ======================
 # LOAD DATA
 # ======================
-df = fetch_data("BTCUSDT", "1h", start_date, end_date)
+df = fetch_data_chunked()
 
 if df.empty:
     st.error("❌ Data load failed")
     st.stop()
+
+# اعمال تقویم واقعی
+df = df.loc[start_date:end_date].copy()
 
 # ======================
 # INDICATORS
@@ -126,6 +112,7 @@ for i in range(len(df)-1):
     next_open = df.iloc[i+1]["Open"]
 
     curr_val = balance + ((row["Close"] - entry) * units if in_pos else 0)
+
     equity.append(curr_val)
     equity_time.append(df.index[i])
 
@@ -166,17 +153,17 @@ if in_pos:
     equity_time.append(df.index[-1])
 
 # ======================
-# EQUITY CLEAN
+# EQUITY
 # ======================
 equity_df = pd.DataFrame(
     {"Strategy": equity},
     index=pd.to_datetime(equity_time)
 )
 
-equity_df = equity_df[~equity_df.index.duplicated(keep="last")].sort_index()
+equity_df = equity_df[~equity_df.index.duplicated()].sort_index()
 
 # ======================
-# DAILY (CALENDAR FIX)
+# DAILY (REAL)
 # ======================
 full_days = pd.date_range(start=start_date.normalize(), end=end_date.normalize(), freq="D")
 
@@ -184,7 +171,7 @@ daily = equity_df.resample("D").last().reindex(full_days)
 daily["Strategy"] = daily["Strategy"].ffill()
 
 daily["Daily PnL $"] = daily["Strategy"].diff().fillna(0)
-daily["Daily %"] = daily["Strategy"].pct_change().fillna(0) * 100
+daily["Daily %"] = daily["Strategy"].pct_change().fillna(0)*100
 
 # ======================
 # HODL
@@ -193,17 +180,17 @@ price_daily = df["Close"].resample("D").last().reindex(full_days).ffill()
 first_price = price_daily.iloc[0]
 
 daily["HODL"] = (price_daily / first_price) * capital
-daily["HODL %"] = daily["HODL"].pct_change().fillna(0) * 100
+daily["HODL %"] = daily["HODL"].pct_change().fillna(0)*100
 
 # ======================
-# FINAL BALANCE
+# FINAL
 # ======================
 final_balance = daily["Strategy"].iloc[-1]
 
 # ======================
 # UI
 # ======================
-st.title("🐋 BTC Whale PRO")
+st.title("🐋 BTC Whale PRO (Fast Stable)")
 
 c1, c2 = st.columns(2)
 c1.metric("Final Balance", f"${final_balance:,.2f}")
@@ -212,29 +199,10 @@ c2.metric("HODL", f"${daily['HODL'].iloc[-1]:,.2f}")
 st.subheader("📈 Strategy vs HODL")
 st.line_chart(daily[["Strategy","HODL"]])
 
-# ======================
-# TABLE
-# ======================
-def style_row(row):
-    styles = []
-    for col in row.index:
-        val = row[col]
-        if col in ["Daily %","HODL %"]:
-            if val > 0:
-                styles.append("color: lime")
-            elif val < 0:
-                styles.append("color: red")
-            else:
-                styles.append("")
-        else:
-            styles.append("")
-    return styles
-
 st.subheader("📅 Daily Table")
 
 st.dataframe(
     daily.sort_index(ascending=False)
-    .style.apply(style_row, axis=1)
     .format({
         "Strategy":"{:,.0f}$",
         "Daily PnL $":"{:+,.0f}$",
