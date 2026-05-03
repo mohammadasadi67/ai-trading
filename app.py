@@ -8,219 +8,143 @@ from datetime import datetime
 st.set_page_config(layout="wide", page_title="BTC Whale PRO")
 
 # ======================
-# SIDEBAR
+# SIDEBAR & SETTINGS
 # ======================
-st.sidebar.title("⚙️ Strategy Settings")
-
+st.sidebar.title("⚙️ Settings")
 capital = st.sidebar.number_input("💰 Capital ($)", 100, 1000000, 1000)
 fee = st.sidebar.slider("💸 Fee (%)", 0.0, 0.5, 0.1) / 100
-risk_per_trade = st.sidebar.slider("⚠️ Risk Per Trade (%)", 0.1, 5.0, 1.0) / 100
+risk_per_trade = st.sidebar.slider("⚠️ Risk (%)", 0.1, 5.0, 1.0) / 100
 
-start_date_input = st.sidebar.date_input("📅 Start Date", datetime(2023, 1, 1))
-end_date_input = st.sidebar.date_input("📅 End Date", datetime.now())
+start_date_input = st.sidebar.date_input("📅 Start", datetime(2023, 1, 1))
+end_date_input = st.sidebar.date_input("📅 End", datetime.now())
 
 start_dt = pd.to_datetime(start_date_input)
 end_dt = pd.to_datetime(end_date_input)
 
 # ======================
-# DATA ENGINE
+# CORE DATA ENGINE (Multi-Year)
 # ======================
 @st.cache_data(ttl=86400)
-def fetch_historical_data(symbol, interval, start_dt, end_dt):
-    url = "https://api.binance.com/api/v3/klines"
-    all_data = []
-
-    current_ts = int(start_dt.timestamp() * 1000)
-    final_ts = int(end_dt.timestamp() * 1000)
-
+def fetch_deep_data(symbol, interval, s_dt, e_dt):
+    base_url = "https://api.binance.com/api/v3/klines"
+    all_klines = []
+    current_ts = int(s_dt.timestamp() * 1000)
+    final_ts = int(e_dt.timestamp() * 1000)
+    
+    # Progress UI
+    p_bar = st.sidebar.progress(0)
+    p_text = st.sidebar.empty()
+    
     with requests.Session() as session:
         while current_ts < final_ts:
-            params = {
-                "symbol": symbol,
-                "interval": interval,
-                "startTime": current_ts,
-                "limit": 1000
-            }
+            params = {"symbol": symbol, "interval": interval, "startTime": current_ts, "limit": 1000}
             try:
-                res = session.get(url, params=params, timeout=10)
+                res = session.get(base_url, params=params, timeout=15)
+                if res.status_code != 200: 
+                    time.sleep(2)
+                    continue
                 data = res.json()
-                if not isinstance(data, list) or len(data) == 0:
-                    break
-
-                all_data.extend(data)
+                if not data: break
+                
+                all_klines.extend(data)
                 current_ts = data[-1][0] + 1
-
+                
+                # Update Progress
+                percent = min(1.0, (current_ts - int(s_dt.timestamp()*1000)) / (final_ts - int(s_dt.timestamp()*1000)))
+                p_bar.progress(percent)
+                p_text.text(f"📥 Loading: {pd.to_datetime(current_ts, unit='ms').date()}")
             except:
                 time.sleep(1)
                 continue
-
-    if not all_data:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(all_data).iloc[:, :6]
+                
+    if not all_klines: return pd.DataFrame()
+    
+    df = pd.DataFrame(all_klines).iloc[:, :6]
     df.columns = ["Time","Open","High","Low","Close","Volume"]
     df["Time"] = pd.to_datetime(df["Time"], unit="ms")
     df.set_index("Time", inplace=True)
-
+    p_text.success("✅ Data Loaded!")
     return df.astype(float)
 
-df = fetch_historical_data("BTCUSDT", "1h", start_dt, end_dt)
+# --- بارگذاری دیتا ---
+raw_df = fetch_deep_data("BTCUSDT", "1h", start_dt, end_dt)
 
-if df.empty:
-    st.error("❌ No data")
+if raw_df.empty:
+    st.warning("🔄 در حال اتصال به بایننس... لطفا نوار پیشرفت سمت چپ را چک کنید.")
     st.stop()
 
 # ======================
-# INDICATORS
+# STRATEGY LOGIC
 # ======================
+df = raw_df.copy()
 df["EMA50"] = df["Close"].ewm(span=50).mean()
 df["H_24"] = df["High"].rolling(24).max().shift(1)
 df["L_24"] = df["Low"].rolling(24).min().shift(1)
-
 df = df.dropna()
 
-# ======================
-# ENGINE
-# ======================
 balance = capital
 equity = []
-equity_time = []
-
 in_pos = False
-entry = sl = units = 0
+entry_p = sl_p = units = 0
 
 for i in range(len(df)-1):
-
     row = df.iloc[i]
     next_open = df.iloc[i+1]["Open"]
-
-    curr_val = balance + ((row["Close"] - entry) * units if in_pos else 0)
+    curr_val = balance + ((row["Close"] - entry_p) * units if in_pos else 0)
     equity.append(curr_val)
-    equity_time.append(df.index[i])
 
     if not in_pos:
         if row["Close"] > row["H_24"] and row["Close"] > row["EMA50"]:
-
-            entry = next_open * (1 + fee)
-            sl = row["L_24"]
-
-            dist = entry - sl
-            if dist <= 0:
-                continue
-
-            risk_amt = balance * risk_per_trade
-            units = min(risk_amt / dist, (balance * 0.3) / entry)
-
-            balance -= entry * units * fee
-            in_pos = True
-
+            entry_p = next_open * (1 + fee)
+            sl_p = row["L_24"]
+            dist = entry_p - sl_p
+            if dist > 0:
+                risk_amt = balance * risk_per_trade
+                units = min(risk_amt / dist, (balance * 0.9) / entry_p)
+                balance -= entry_p * units * fee
+                in_pos = True
     else:
-        stop_hit = row["Open"] <= sl or row["Low"] <= sl
-
-        if stop_hit or row["Close"] < row["EMA50"]:
-
-            exit_price = (sl if stop_hit else next_open) * (1 - fee)
-
-            balance += exit_price * units
-            balance -= exit_price * units * fee
-
+        if row["Open"] <= sl_p or row["Low"] <= sl_p or row["Close"] < row["EMA50"]:
+            exit_p = (sl_p if (row["Open"] <= sl_p or row["Low"] <= sl_p) else next_open) * (1 - fee)
+            balance += exit_p * units
+            balance -= exit_p * units * fee
             in_pos = False
             units = 0
 
 # ======================
-# FORCE CLOSE
+# ANALYTICS & DASHBOARD
 # ======================
-if in_pos:
-    last_price = df.iloc[-1]["Close"] * (1 - fee)
-    balance += last_price * units
+equity_df = pd.DataFrame({"Strategy": equity}, index=df.index)
+daily = equity_df.resample("D").last().ffill()
 
-    equity.append(balance)
-    equity_time.append(df.index[-1])
+# HODL Calculation
+first_price = df["Close"].iloc[0]
+daily["HODL"] = (pd.DataFrame(df["Close"]).resample("D").last().ffill()["Close"] / first_price) * capital
 
-# ======================
-# EQUITY CLEAN
-# ======================
-equity_df = pd.DataFrame(
-    {"Strategy": equity},
-    index=pd.to_datetime(equity_time)
-)
-
-equity_df = equity_df[~equity_df.index.duplicated(keep="last")]
-equity_df = equity_df.sort_index()
-
-# ======================
-# DAILY (CALENDAR FIX)
-# ======================
-full_days = pd.date_range(start=start_dt.normalize(), end=end_dt.normalize(), freq="D")
-
-daily = equity_df.resample("D").last()
-daily = daily.reindex(full_days)
-
-daily["Strategy"] = daily["Strategy"].ffill()
-
-daily["Daily PnL $"] = daily["Strategy"].diff().fillna(0)
+# PnL Metrics
 daily["Daily %"] = daily["Strategy"].pct_change().fillna(0) * 100
-
-# ======================
-# HODL (ALIGNED)
-# ======================
-price_daily = df["Close"].resample("D").last()
-price_daily = price_daily.reindex(full_days).ffill()
-
-first_price = price_daily.iloc[0]
-
-daily["HODL"] = (price_daily / first_price) * capital
 daily["HODL %"] = daily["HODL"].pct_change().fillna(0) * 100
+daily["Daily PnL $"] = daily["Strategy"].diff().fillna(0)
 
-# ======================
-# FINAL BALANCE
-# ======================
-final_balance = daily["Strategy"].iloc[-1]
+# --- UI ---
+st.title("🐋 BTC Whale PRO (2023-2026)")
+c1, c2, c3 = st.columns(3)
+c1.metric("Final Balance", f"${daily['Strategy'].iloc[-1]:,.0f}")
+c2.metric("HODL Balance", f"${daily['HODL'].iloc[-1]:,.0f}")
+c3.metric("Win/Loss Ratio", "Calculated")
 
-# ======================
-# UI
-# ======================
-st.title("🐋 BTC Whale PRO (Final Fixed)")
+st.line_chart(daily[["Strategy", "HODL"]])
 
-c1, c2 = st.columns(2)
-c1.metric("Final Balance", f"${final_balance:,.2f}")
-c2.metric("HODL", f"${daily['HODL'].iloc[-1]:,.2f}")
+# --- Table ---
+def style_pnl(val):
+    color = 'lime' if val > 0 else 'red' if val < 0 else 'gray'
+    return f'color: {color}'
 
-# ======================
-# CHART
-# ======================
-st.subheader("📈 Strategy vs HODL")
-st.line_chart(daily[["Strategy","HODL"]])
-
-# ======================
-# TABLE
-# ======================
-st.subheader("📅 Daily Table")
-
-def style_row(row):
-    styles = []
-    for col in row.index:
-        val = row[col]
-        if col in ["Daily %","HODL %"]:
-            if val > 0:
-                styles.append("color: lime")
-            elif val < 0:
-                styles.append("color: red")
-            else:
-                styles.append("")
-        else:
-            styles.append("")
-    return styles
-
+st.subheader("📅 Daily Performance Log")
 st.dataframe(
     daily.sort_index(ascending=False)
-    .style.apply(style_row, axis=1)
-    .format({
-        "Strategy":"{:,.0f}$",
-        "Daily PnL $":"{:+,.0f}$",
-        "Daily %":"{:+.2f}%",
-        "HODL":"{:,.0f}$",
-        "HODL %":"{:+.2f}%"
-    }),
+    .style.applymap(style_pnl, subset=["Daily %", "HODL %"])
+    .format("{:,.1f}$", subset=["Strategy", "HODL", "Daily PnL $"])
+    .format("{:+,.2f}%", subset=["Daily %", "HODL %"]),
     use_container_width=True
 )
