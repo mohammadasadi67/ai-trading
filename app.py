@@ -7,150 +7,143 @@ from datetime import datetime
 st.set_page_config(layout="wide", page_title="BTC Whale PRO")
 
 # ======================
+# SIDEBAR (🔥 جدید)
+# ======================
+st.sidebar.title("⚙️ Settings")
+
+capital = st.sidebar.number_input("💰 Capital ($)", 100, 100000, 1000)
+
+fee = st.sidebar.slider("💸 Fee (%)", 0.0, 0.5, 0.1) / 100
+risk_per_trade = st.sidebar.slider("⚠️ Risk per trade (%)", 0.1, 5.0, 1.0) / 100
+
+timeframe = st.sidebar.selectbox("⏱️ Timeframe", ["1h","4h","1d"])
+
+start_date = st.sidebar.date_input("📅 Start Date", datetime(2024,1,1))
+end_date = st.sidebar.date_input("📅 End Date", datetime.now())
+
+# ======================
 # DATA
 # ======================
 @st.cache_data(ttl=3600)
-def fetch_data():
+def fetch_data(tf):
     url = "https://data-api.binance.vision/api/v3/klines"
-    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 1000}
+    params = {"symbol":"BTCUSDT","interval":tf,"limit":1000}
 
-    res = requests.get(url, params=params, timeout=10)
+    res = requests.get(url, params=params)
     data = res.json()
-
-    if not isinstance(data, list) or len(data) == 0:
-        return pd.DataFrame()
 
     df = pd.DataFrame(data).iloc[:, :6]
     df.columns = ["Time","Open","High","Low","Close","Volume"]
 
-    df["Time"] = pd.to_datetime(df["Time"], unit="ms", errors="coerce")
-    df = df.dropna(subset=["Time"])
+    df["Time"] = pd.to_datetime(df["Time"], unit="ms")
     df.set_index("Time", inplace=True)
 
     return df.astype(float)
 
+df = fetch_data(timeframe)
+
+# 📅 فیلتر تاریخ
+df = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))]
 
 # ======================
 # INDICATORS
 # ======================
-def add_indicators(df):
+df["EMA50"] = df["Close"].ewm(span=50).mean()
 
-    df = df.copy()
-
-    df["EMA50"] = df["Close"].ewm(span=50).mean()
-
-    tr = pd.concat([
+df["ATR"] = (
+    pd.concat([
         df["High"]-df["Low"],
         abs(df["High"]-df["Close"].shift()),
         abs(df["Low"]-df["Close"].shift())
     ], axis=1).max(axis=1)
+).ewm(span=14).mean()
 
-    df["ATR"] = tr.ewm(span=14).mean()
+df["H_48"] = df["High"].rolling(12).max().shift(1)
+df["L_48"] = df["Low"].rolling(12).min().shift(1)
 
-    df["H_48"] = df["High"].rolling(12).max().shift(1)
-    df["L_48"] = df["Low"].rolling(12).min().shift(1)
-
-    return df.dropna()
-
+df = df.dropna()
 
 # ======================
-# ENGINE (NO BIAS)
+# ENGINE (REALISTIC)
 # ======================
-def run_engine(df, capital=1000):
+balance = capital
+equity = []
+trades = []
 
-    balance = capital
-    equity = []
-    trades = []
+in_pos = False
+entry = sl = units = 0
 
-    in_pos = False
-    entry = sl = units = 0
+for i in range(50, len(df)-1):
 
-    for i in range(50, len(df)-1):
+    row = df.iloc[i]
+    next_open = df.iloc[i+1]["Open"]
 
-        row = df.iloc[i]
-        next_open = df.iloc[i+1]["Open"]
+    curr_val = balance + ((row["Close"] - entry) * units if in_pos else 0)
+    equity.append(curr_val)
 
-        curr_val = balance + ((row["Close"] - entry) * units if in_pos else 0)
-        equity.append(curr_val)
+    if not in_pos:
 
-        if not in_pos:
+        if row["Close"] > row["H_48"] and row["Close"] > row["EMA50"]:
 
-            if row["Close"] > row["H_48"] and row["Close"] > row["EMA50"]:
+            entry = next_open * (1 + fee)
+            sl = row["L_48"]
 
-                entry = next_open * 1.001
-                sl = row["L_48"]
+            dist = entry - sl
+            if dist <= 0:
+                continue
 
-                dist = entry - sl
-                if dist <= 0:
-                    continue
+            risk_amount = balance * risk_per_trade
+            units = risk_amount / dist
 
-                risk = balance * 0.01
-                units = risk / dist
+            # cap exposure
+            units = min(units, (balance * 0.3) / entry)
 
-                # cap exposure
-                units = min(units, (balance * 0.3) / entry)
+            balance -= entry * units * fee
 
-                balance -= entry * units * 0.001
+            in_pos = True
+            trades.append({
+                "Time": df.index[i],
+                "Type": "BUY",
+                "Price": entry
+            })
 
-                in_pos = True
-                trades.append({
-                    "Time": df.index[i],
-                    "Type": "BUY",
-                    "Price": entry
-                })
+    else:
 
-        else:
+        stop_hit = row["Open"] <= sl or row["Low"] <= sl
 
-            stop_hit = row["Open"] <= sl or row["Low"] <= sl
+        if stop_hit or row["Close"] < row["EMA50"]:
 
-            if stop_hit or row["Close"] < row["EMA50"]:
+            exit_price = (sl if stop_hit else next_open) * (1 - fee)
 
-                exit_price = (sl if stop_hit else next_open) * 0.999
+            pnl = (exit_price - entry) * units
 
-                pnl = (exit_price - entry) * units
+            balance += exit_price * units
+            balance -= exit_price * units * fee
 
-                balance += exit_price * units
-                balance -= exit_price * units * 0.001
+            trades.append({
+                "Time": df.index[i],
+                "Type": "SELL",
+                "Price": exit_price,
+                "PnL": pnl,
+                "PnL%": (exit_price/entry - 1) * 100
+            })
 
-                trades.append({
-                    "Time": df.index[i],
-                    "Type": "SELL",
-                    "Price": exit_price,
-                    "PnL": pnl,
-                    "PnL%": (exit_price/entry - 1) * 100
-                })
+            in_pos = False
+            units = 0
 
-                in_pos = False
-                units = 0
-
-    return pd.DataFrame(trades), equity, balance
-
+trades = pd.DataFrame(trades)
 
 # ======================
 # UI
 # ======================
-st.title("🐋 BTC Whale PRO (Realistic)")
+st.title("🐋 BTC Whale PRO (Full Control)")
 
-df = fetch_data()
-
-if df.empty:
-    st.error("❌ Data load failed")
-    st.stop()
-
-df = add_indicators(df)
-trades, equity, final_balance = run_engine(df)
-
-# ======================
-# METRICS
-# ======================
 c1, c2, c3 = st.columns(3)
-
-c1.metric("Final Balance", f"${final_balance:,.2f}")
+c1.metric("Final Balance", f"${balance:,.2f}")
 c2.metric("Trades", len(trades))
 
 if "PnL%" in trades.columns:
-    exits = trades.dropna()
-    win_rate = (exits["PnL%"] > 0).mean() * 100
+    win_rate = (trades["PnL%"] > 0).mean()*100
     c3.metric("Win Rate", f"{win_rate:.1f}%")
 
 # ======================
@@ -160,43 +153,34 @@ st.subheader("📈 Equity Curve")
 st.line_chart(equity)
 
 # ======================
-# STYLED TABLE (SAFE)
+# TABLE (رنگی)
 # ======================
-st.subheader("📊 Trade Table")
+st.subheader("📊 Trades")
 
-if not trades.empty:
+def style_row(row):
+    styles = []
+    for col in row.index:
+        val = row[col]
 
-    trades = trades.sort_values("Time", ascending=False)
-
-    def style_row(row):
-        styles = []
-        for col in row.index:
-            val = row[col]
-
-            if col in ["PnL", "PnL%"]:
-                if pd.notna(val):
-                    styles.append("color: lime" if val > 0 else "color: red")
-                else:
-                    styles.append("")
-
-            elif col == "Type":
-                if val == "BUY":
-                    styles.append("background-color: #0f5132; color:white")
-                elif val == "SELL":
-                    styles.append("background-color: #842029; color:white")
-                else:
-                    styles.append("")
+        if col in ["PnL","PnL%"]:
+            if pd.notna(val):
+                styles.append("color: lime" if val > 0 else "color: red")
             else:
                 styles.append("")
-        return styles
+        elif col == "Type":
+            styles.append("background-color: #0f5132; color:white" if val=="BUY"
+                          else "background-color:#842029; color:white")
+        else:
+            styles.append("")
+    return styles
 
-    styled = trades.style.apply(style_row, axis=1).format({
-        "Price": "{:,.2f}",
-        "PnL": "{:,.2f}",
-        "PnL%": "{:.2f}%"
-    })
+if not trades.empty:
+    styled = trades.sort_values("Time", ascending=False)\
+        .style.apply(style_row, axis=1)\
+        .format({
+            "Price":"{:,.2f}",
+            "PnL":"{:,.2f}",
+            "PnL%":"{:.2f}%"
+        })
 
     st.dataframe(styled, use_container_width=True)
-
-else:
-    st.warning("No trades yet.")
