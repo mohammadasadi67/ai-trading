@@ -2,51 +2,78 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
+import time
 import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="BTC Spot Whale PRO")
 
 # ======================
-# DATA
+# DATA ENGINE (SAFE)
 # ======================
 @st.cache_data(ttl=600)
 def fetch_data():
-    url = "https://api.binance.com/api/v3/klines"
+
+    urls = [
+        "https://api.binance.com/api/v3/klines",
+        "https://data-api.binance.vision/api/v3/klines"
+    ]
+
     params = {"symbol": "BTCUSDT", "interval": "1h", "limit": 1000}
-    res = requests.get(url, params=params, timeout=10).json()
 
-    df = pd.DataFrame(res).iloc[:, :6]
-    df.columns = ["Time","Open","High","Low","Close","Volume"]
-    df["Time"] = pd.to_datetime(df["Time"], unit="ms")
-    df.set_index("Time", inplace=True)
+    for url in urls:
+        for attempt in range(3):
+            try:
+                res = requests.get(url, params=params, timeout=10)
 
-    return df.astype(float)
+                if res.status_code != 200:
+                    time.sleep(1)
+                    continue
+
+                data = res.json()
+
+                # اگر error object بود
+                if not isinstance(data, list):
+                    time.sleep(1)
+                    continue
+
+                if len(data) == 0:
+                    continue
+
+                df = pd.DataFrame(data).iloc[:, :6]
+                df.columns = ["Time","Open","High","Low","Close","Volume"]
+
+                df["Time"] = pd.to_datetime(df["Time"], unit="ms")
+                df.set_index("Time", inplace=True)
+
+                return df.astype(float)
+
+            except:
+                time.sleep(1)
+
+    st.error("❌ Data fetch failed (Binance blocked or unavailable)")
+    return pd.DataFrame()
 
 # ======================
 # INDICATORS
 # ======================
 def add_indicators(df):
 
-    # 4H Trend
     df_4h = df.resample("4H").agg({"Close":"last"})
     df_4h["MA_4H"] = df_4h["Close"].rolling(50).mean()
 
     df = df.join(df_4h["MA_4H"], how="left")
     df["MA_4H"] = df["MA_4H"].ffill()
 
-    # ATR
     tr = pd.concat([
-        df["High"] - df["Low"],
-        abs(df["High"] - df["Close"].shift()),
-        abs(df["Low"] - df["Close"].shift())
+        df["High"]-df["Low"],
+        abs(df["High"]-df["Close"].shift()),
+        abs(df["Low"]-df["Close"].shift())
     ], axis=1).max(axis=1)
 
     df["ATR"] = tr.ewm(span=14).mean()
 
-    # Trend Score
     df["Trend_Score"] = (df["Close"] - df["MA_4H"]) / df["ATR"]
 
-    # Structure
     df["Structure_Low"] = df["Low"].rolling(10).min().shift(1)
     df["MA_Fast"] = df["Close"].rolling(5).mean()
     df["H_24"] = df["High"].rolling(24).max().shift(1)
@@ -77,7 +104,6 @@ def run_engine(df, capital=1000):
         if row["Close"] == 0 or np.isnan(row["ATR"]):
             continue
 
-        # equity
         curr_val = balance + ((row["Close"] - entry_p) * units if in_pos else 0)
         equity.append(curr_val)
         peak = max(peak, curr_val)
@@ -111,7 +137,6 @@ def run_engine(df, capital=1000):
                     continue
 
                 units = (balance * 0.005) / risk_dist
-
                 balance -= entry_p * units * 0.001
 
                 in_pos = True
@@ -187,14 +212,18 @@ def run_engine(df, capital=1000):
 st.title("🐋 BTC Spot Whale PRO")
 
 df = fetch_data()
-df = add_indicators(df)
 
+if df.empty:
+    st.stop()
+
+df = add_indicators(df)
 trades, equity, final_balance = run_engine(df)
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Final Balance", f"${final_balance:,.2f}")
 
 if not trades.empty and "PnL%" in trades.columns:
+
     exits = trades.dropna(subset=["PnL%"])
 
     win_rate = (exits["PnL%"] > 0).mean() * 100
@@ -209,7 +238,7 @@ if not trades.empty and "PnL%" in trades.columns:
     st.subheader("📈 Equity Curve")
     st.line_chart(equity)
 
-    # Monte Carlo Safe
+    # Monte Carlo safe
     if len(exits) > 5:
         st.subheader("🎲 Monte Carlo")
 
