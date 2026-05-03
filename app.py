@@ -7,7 +7,7 @@ from datetime import datetime
 st.set_page_config(layout="wide", page_title="BTC Whale PRO")
 
 # ======================
-# SIDEBAR (🔥 جدید)
+# SIDEBAR
 # ======================
 st.sidebar.title("⚙️ Settings")
 
@@ -42,7 +42,7 @@ def fetch_data(tf):
 
 df = fetch_data(timeframe)
 
-# 📅 فیلتر تاریخ
+# فیلتر تاریخ
 df = df[(df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))]
 
 # ======================
@@ -64,10 +64,11 @@ df["L_48"] = df["Low"].rolling(12).min().shift(1)
 df = df.dropna()
 
 # ======================
-# ENGINE (REALISTIC)
+# ENGINE (NO BIAS)
 # ======================
 balance = capital
 equity = []
+equity_time = []
 trades = []
 
 in_pos = False
@@ -79,7 +80,9 @@ for i in range(50, len(df)-1):
     next_open = df.iloc[i+1]["Open"]
 
     curr_val = balance + ((row["Close"] - entry) * units if in_pos else 0)
+
     equity.append(curr_val)
+    equity_time.append(df.index[i])
 
     if not in_pos:
 
@@ -92,10 +95,9 @@ for i in range(50, len(df)-1):
             if dist <= 0:
                 continue
 
-            risk_amount = balance * risk_per_trade
-            units = risk_amount / dist
+            risk_amt = balance * risk_per_trade
+            units = risk_amt / dist
 
-            # cap exposure
             units = min(units, (balance * 0.3) / entry)
 
             balance -= entry * units * fee
@@ -136,7 +138,7 @@ trades = pd.DataFrame(trades)
 # ======================
 # UI
 # ======================
-st.title("🐋 BTC Whale PRO (Full Control)")
+st.title("🐋 BTC Whale PRO")
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Final Balance", f"${balance:,.2f}")
@@ -147,13 +149,75 @@ if "PnL%" in trades.columns:
     c3.metric("Win Rate", f"{win_rate:.1f}%")
 
 # ======================
-# EQUITY
+# EQUITY CHART
 # ======================
 st.subheader("📈 Equity Curve")
-st.line_chart(equity)
+
+equity_df = pd.DataFrame({
+    "Time": equity_time,
+    "Strategy": equity
+}).set_index("Time")
+
+st.line_chart(equity_df)
 
 # ======================
-# TABLE (رنگی)
+# DAILY TABLE + HODL
+# ======================
+st.subheader("📅 Daily Performance (Strategy vs HODL)")
+
+daily = equity_df.resample("D").last()
+
+daily["Daily PnL $"] = daily["Strategy"].diff().fillna(0)
+daily["Daily %"] = daily["Strategy"].pct_change().fillna(0) * 100
+
+# HODL
+first_price = df["Close"].iloc[0]
+hodl = df["Close"] / first_price * capital
+
+hodl_df = pd.DataFrame({"HODL": hodl})
+hodl_daily = hodl_df.resample("D").last()
+
+daily["HODL"] = hodl_daily["HODL"]
+daily["HODL %"] = daily["HODL"].pct_change().fillna(0) * 100
+
+# رنگی
+def style_daily(row):
+    styles = []
+    for col in row.index:
+        val = row[col]
+        if col in ["Daily %","HODL %"]:
+            styles.append("color: lime" if val>0 else "color: red")
+        else:
+            styles.append("")
+    return styles
+
+st.dataframe(
+    daily.sort_index(ascending=False)
+    .style.apply(style_daily, axis=1)
+    .format({
+        "Strategy":"{:,.0f}$",
+        "Daily PnL $":"{:+,.0f}$",
+        "Daily %":"{:+.2f}%",
+        "HODL":"{:,.0f}$",
+        "HODL %":"{:+.2f}%"
+    }),
+    use_container_width=True
+)
+
+# ======================
+# COMPARE CHART
+# ======================
+st.subheader("📊 Strategy vs HODL")
+
+compare = pd.DataFrame({
+    "Strategy": daily["Strategy"],
+    "HODL": daily["HODL"]
+})
+
+st.line_chart(compare)
+
+# ======================
+# TRADES TABLE
 # ======================
 st.subheader("📊 Trades")
 
@@ -168,19 +232,20 @@ def style_row(row):
             else:
                 styles.append("")
         elif col == "Type":
-            styles.append("background-color: #0f5132; color:white" if val=="BUY"
-                          else "background-color:#842029; color:white")
+            styles.append("background-color:#0f5132;color:white" if val=="BUY"
+                          else "background-color:#842029;color:white")
         else:
             styles.append("")
     return styles
 
 if not trades.empty:
-    styled = trades.sort_values("Time", ascending=False)\
-        .style.apply(style_row, axis=1)\
+    st.dataframe(
+        trades.sort_values("Time", ascending=False)
+        .style.apply(style_row, axis=1)
         .format({
             "Price":"{:,.2f}",
             "PnL":"{:,.2f}",
             "PnL%":"{:.2f}%"
-        })
-
-    st.dataframe(styled, use_container_width=True)
+        }),
+        use_container_width=True
+    )
