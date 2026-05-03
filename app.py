@@ -2,31 +2,29 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import time
 from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="BTC Whale PRO")
 
 # ======================
-# DATA (FAST + SAFE)
+# DATA
 # ======================
 @st.cache_data(ttl=3600)
 def fetch_data():
     url = "https://data-api.binance.vision/api/v3/klines"
-
-    params = {
-        "symbol": "BTCUSDT",
-        "interval": "4h",
-        "limit": 1000
-    }
+    params = {"symbol": "BTCUSDT", "interval": "4h", "limit": 1000}
 
     res = requests.get(url, params=params, timeout=10)
     data = res.json()
 
+    if not isinstance(data, list) or len(data) == 0:
+        return pd.DataFrame()
+
     df = pd.DataFrame(data).iloc[:, :6]
     df.columns = ["Time","Open","High","Low","Close","Volume"]
 
-    df["Time"] = pd.to_datetime(df["Time"], unit="ms")
+    df["Time"] = pd.to_datetime(df["Time"], unit="ms", errors="coerce")
+    df = df.dropna(subset=["Time"])
     df.set_index("Time", inplace=True)
 
     return df.astype(float)
@@ -37,14 +35,17 @@ def fetch_data():
 # ======================
 def add_indicators(df):
 
+    df = df.copy()
+
     df["EMA50"] = df["Close"].ewm(span=50).mean()
-    df["ATR"] = (
-        pd.concat([
-            df["High"]-df["Low"],
-            abs(df["High"]-df["Close"].shift()),
-            abs(df["Low"]-df["Close"].shift())
-        ], axis=1).max(axis=1)
-    ).ewm(span=14).mean()
+
+    tr = pd.concat([
+        df["High"]-df["Low"],
+        abs(df["High"]-df["Close"].shift()),
+        abs(df["Low"]-df["Close"].shift())
+    ], axis=1).max(axis=1)
+
+    df["ATR"] = tr.ewm(span=14).mean()
 
     df["H_48"] = df["High"].rolling(12).max().shift(1)
     df["L_48"] = df["Low"].rolling(12).min().shift(1)
@@ -86,7 +87,7 @@ def run_engine(df, capital=1000):
                 risk = balance * 0.01
                 units = risk / dist
 
-                # cap position
+                # cap exposure
                 units = min(units, (balance * 0.3) / entry)
 
                 balance -= entry * units * 0.001
@@ -131,8 +132,12 @@ def run_engine(df, capital=1000):
 st.title("🐋 BTC Whale PRO (Realistic)")
 
 df = fetch_data()
-df = add_indicators(df)
 
+if df.empty:
+    st.error("❌ Data load failed")
+    st.stop()
+
+df = add_indicators(df)
 trades, equity, final_balance = run_engine(df)
 
 # ======================
@@ -155,7 +160,7 @@ st.subheader("📈 Equity Curve")
 st.line_chart(equity)
 
 # ======================
-# TABLE (🔥 رنگی حرفه‌ای)
+# STYLED TABLE (SAFE)
 # ======================
 st.subheader("📊 Trade Table")
 
@@ -163,26 +168,33 @@ if not trades.empty:
 
     trades = trades.sort_values("Time", ascending=False)
 
-    def color_pnl(val):
-        if pd.isna(val):
-            return ""
-        return "color: lime" if val > 0 else "color: red"
+    def style_row(row):
+        styles = []
+        for col in row.index:
+            val = row[col]
 
-    def bg_type(val):
-        if val == "BUY":
-            return "background-color: #0f5132; color:white"
-        elif val == "SELL":
-            return "background-color: #842029; color:white"
-        return ""
+            if col in ["PnL", "PnL%"]:
+                if pd.notna(val):
+                    styles.append("color: lime" if val > 0 else "color: red")
+                else:
+                    styles.append("")
 
-    styled = trades.style \
-        .applymap(color_pnl, subset=["PnL","PnL%"]) \
-        .applymap(bg_type, subset=["Type"]) \
-        .format({
-            "Price": "{:,.2f}",
-            "PnL": "{:,.2f}",
-            "PnL%": "{:.2f}%"
-        })
+            elif col == "Type":
+                if val == "BUY":
+                    styles.append("background-color: #0f5132; color:white")
+                elif val == "SELL":
+                    styles.append("background-color: #842029; color:white")
+                else:
+                    styles.append("")
+            else:
+                styles.append("")
+        return styles
+
+    styled = trades.style.apply(style_row, axis=1).format({
+        "Price": "{:,.2f}",
+        "PnL": "{:,.2f}",
+        "PnL%": "{:.2f}%"
+    })
 
     st.dataframe(styled, use_container_width=True)
 
