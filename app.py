@@ -20,17 +20,29 @@ start_date = pd.to_datetime(st.sidebar.date_input("📅 Start", datetime(2023,1,
 end_date = pd.to_datetime(st.sidebar.date_input("📅 End", datetime.now()))
 
 # ======================
-# SAFE CHUNK FETCH (🔥)
+# DATE FIX (🔥 مهم)
+# ======================
+now = pd.to_datetime(datetime.utcnow())
+
+if end_date > now:
+    st.sidebar.warning("End date adjusted to today")
+    end_date = now
+
+if start_date >= end_date:
+    st.error("❌ Invalid date range")
+    st.stop()
+
+# ======================
+# FAST CHUNK FETCH
 # ======================
 @st.cache_data(ttl=3600)
-def fetch_data_chunked(symbol="BTCUSDT", interval="1h", chunks=20):
+def fetch_data(symbol="BTCUSDT", interval="1h", chunks=15):
 
     url = "https://api.binance.com/api/v3/klines"
     all_data = []
-
     end_time = None
 
-    for i in range(chunks):
+    for _ in range(chunks):
 
         params = {
             "symbol": symbol,
@@ -54,7 +66,7 @@ def fetch_data_chunked(symbol="BTCUSDT", interval="1h", chunks=20):
 
             all_data.extend(data)
 
-            # حرکت به عقب (بدون loop خطرناک)
+            # حرکت به عقب (safe)
             end_time = data[0][0] - 1
 
             time.sleep(0.05)
@@ -62,30 +74,32 @@ def fetch_data_chunked(symbol="BTCUSDT", interval="1h", chunks=20):
         except:
             break
 
-    if len(all_data) == 0:
+    if not all_data:
         return pd.DataFrame()
 
     df = pd.DataFrame(all_data).iloc[:, :6]
     df.columns = ["Time","Open","High","Low","Close","Volume"]
-
     df["Time"] = pd.to_datetime(df["Time"], unit="ms")
     df.set_index("Time", inplace=True)
 
-    df = df.sort_index()
-
-    return df.astype(float)
+    return df.sort_index().astype(float)
 
 # ======================
 # LOAD DATA
 # ======================
-df = fetch_data_chunked()
+df = fetch_data()
 
 if df.empty:
     st.error("❌ Data load failed")
     st.stop()
 
-# اعمال تقویم واقعی
+# اعمال تقویم
 df = df.loc[start_date:end_date].copy()
+
+# fallback اگر بازه خالی شد
+if df.empty:
+    st.warning("⚠️ No data in selected range → using last 30 days")
+    df = fetch_data().last("30D")
 
 # ======================
 # INDICATORS
@@ -163,7 +177,7 @@ equity_df = pd.DataFrame(
 equity_df = equity_df[~equity_df.index.duplicated()].sort_index()
 
 # ======================
-# DAILY (REAL)
+# DAILY
 # ======================
 full_days = pd.date_range(start=start_date.normalize(), end=end_date.normalize(), freq="D")
 
@@ -171,7 +185,7 @@ daily = equity_df.resample("D").last().reindex(full_days)
 daily["Strategy"] = daily["Strategy"].ffill()
 
 daily["Daily PnL $"] = daily["Strategy"].diff().fillna(0)
-daily["Daily %"] = daily["Strategy"].pct_change().fillna(0)*100
+daily["Daily %"] = daily["Strategy"].pct_change().fillna(0) * 100
 
 # ======================
 # HODL
@@ -180,7 +194,7 @@ price_daily = df["Close"].resample("D").last().reindex(full_days).ffill()
 first_price = price_daily.iloc[0]
 
 daily["HODL"] = (price_daily / first_price) * capital
-daily["HODL %"] = daily["HODL"].pct_change().fillna(0)*100
+daily["HODL %"] = daily["HODL"].pct_change().fillna(0) * 100
 
 # ======================
 # FINAL
@@ -190,7 +204,7 @@ final_balance = daily["Strategy"].iloc[-1]
 # ======================
 # UI
 # ======================
-st.title("🐋 BTC Whale PRO (Fast Stable)")
+st.title("🐋 BTC Whale PRO (Stable)")
 
 c1, c2 = st.columns(2)
 c1.metric("Final Balance", f"${final_balance:,.2f}")
@@ -202,8 +216,7 @@ st.line_chart(daily[["Strategy","HODL"]])
 st.subheader("📅 Daily Table")
 
 st.dataframe(
-    daily.sort_index(ascending=False)
-    .format({
+    daily.sort_index(ascending=False).format({
         "Strategy":"{:,.0f}$",
         "Daily PnL $":"{:+,.0f}$",
         "Daily %":"{:+.2f}%",
