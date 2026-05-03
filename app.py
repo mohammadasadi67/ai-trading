@@ -5,30 +5,32 @@ import requests
 import time
 from datetime import datetime
 
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="BTC Whale PRO")
 
 # ======================
 # SIDEBAR
 # ======================
 st.sidebar.title("⚙️ Settings")
 
-capital = st.sidebar.number_input("Capital", 100, 1000000, 1000)
+capital = st.sidebar.number_input("Capital ($)", 100, 1_000_000, 1000)
 fee = st.sidebar.slider("Fee (%)", 0.0, 0.5, 0.1) / 100
 risk = st.sidebar.slider("Risk (%)", 0.1, 5.0, 1.0) / 100
 
-start_date = pd.to_datetime(st.sidebar.date_input("Start", datetime(2026,5,1)))
-end_date = pd.to_datetime(st.sidebar.date_input("End", datetime(2026,5,3)))
+# 👇 تاریخ‌ها را به صورت naive (بدون timezone) بساز
+start_date = pd.to_datetime(st.sidebar.date_input("Start", datetime(2026, 5, 1))).tz_localize(None)
+end_date   = pd.to_datetime(st.sidebar.date_input("End",   datetime(2026, 5, 3))).tz_localize(None)
 
 # ======================
-# DATE FIX
+# DATE FIX (🔥 رفع TypeError)
 # ======================
-now = pd.Timestamp.utcnow()
+now = pd.Timestamp.utcnow().tz_localize(None)  # 👈 این مهمه
 
 if end_date > now:
     end_date = now
+    st.sidebar.warning("End date adjusted to now")
 
 if start_date >= end_date:
-    st.error("Invalid date range")
+    st.error("❌ Invalid date range")
     st.stop()
 
 # ======================
@@ -40,15 +42,12 @@ def fetch_data(symbol, interval, start_dt, end_dt):
     url = "https://api.binance.com/api/v3/klines"
 
     start_ts = int(start_dt.timestamp() * 1000)
-    end_ts = int(end_dt.timestamp() * 1000)
+    end_ts   = int(end_dt.timestamp()   * 1000)
 
     hours = (end_dt - start_dt).total_seconds() / 3600
 
-    # ======================
-    # SMALL RANGE
-    # ======================
+    # -------- SMALL RANGE (<=1000 candles)
     if hours <= 1000:
-
         params = {
             "symbol": symbol,
             "interval": interval,
@@ -56,77 +55,60 @@ def fetch_data(symbol, interval, start_dt, end_dt):
             "endTime": end_ts,
             "limit": 1000
         }
-
-        res = requests.get(url, params=params, timeout=10)
-
-        if res.status_code != 200:
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code != 200:
             return pd.DataFrame()
 
-        data = res.json()
-
+        data = r.json()
         if not isinstance(data, list) or len(data) == 0:
             return pd.DataFrame()
 
         df = pd.DataFrame(data).iloc[:, :6]
         df.columns = ["Time","Open","High","Low","Close","Volume"]
-
         df["Time"] = pd.to_datetime(df["Time"], unit="ms")
         df.set_index("Time", inplace=True)
-
         return df.astype(float)
 
-    # ======================
-    # LARGE RANGE
-    # ======================
-    else:
+    # -------- LARGE RANGE (chunk backward)
+    all_data = []
+    current_end = end_ts
 
-        all_data = []
-        current_end = end_ts
+    for _ in range(50):
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "endTime": current_end,
+            "limit": 1000
+        }
 
-        for _ in range(50):
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code != 200:
+            break
 
-            params = {
-                "symbol": symbol,
-                "interval": interval,
-                "endTime": current_end,
-                "limit": 1000
-            }
+        data = r.json()
+        if not isinstance(data, list) or len(data) == 0:
+            break
 
-            res = requests.get(url, params=params, timeout=10)
+        all_data.extend(data)
+        first_ts = data[0][0]
 
-            if res.status_code != 200:
-                break
+        if first_ts <= start_ts:
+            break
 
-            data = res.json()
+        current_end = first_ts - 1
+        time.sleep(0.05)
 
-            if not isinstance(data, list) or len(data) == 0:
-                break
+    if not all_data:
+        return pd.DataFrame()
 
-            all_data.extend(data)
+    df = pd.DataFrame(all_data).iloc[:, :6]
+    df.columns = ["Time","Open","High","Low","Close","Volume"]
+    df["Time"] = pd.to_datetime(df["Time"], unit="ms")
+    df.set_index("Time", inplace=True)
 
-            first_ts = data[0][0]
-
-            if first_ts <= start_ts:
-                break
-
-            current_end = first_ts - 1
-
-            time.sleep(0.05)
-
-        if len(all_data) == 0:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(all_data).iloc[:, :6]
-        df.columns = ["Time","Open","High","Low","Close","Volume"]
-
-        df["Time"] = pd.to_datetime(df["Time"], unit="ms")
-        df.set_index("Time", inplace=True)
-
-        df = df.sort_index()
-
-        df = df[(df.index >= start_dt) & (df.index <= end_dt)]
-
-        return df.astype(float)
+    df = df.sort_index()
+    df = df[(df.index >= start_dt) & (df.index <= end_dt)]
+    return df.astype(float)
 
 # ======================
 # LOAD DATA
@@ -143,7 +125,6 @@ if df.empty:
 df["EMA50"] = df["Close"].ewm(span=50).mean()
 df["H_24"] = df["High"].rolling(24).max().shift(1)
 df["L_24"] = df["Low"].rolling(24).min().shift(1)
-
 df = df.dropna()
 
 # ======================
@@ -154,20 +135,18 @@ equity = []
 times = []
 
 in_pos = False
-entry = sl = units = 0
+entry = sl = units = 0.0
 
 for i in range(len(df)-1):
-
     row = df.iloc[i]
     next_open = df.iloc[i+1]["Open"]
 
-    value = balance + ((row["Close"] - entry) * units if in_pos else 0)
+    value = balance + ((row["Close"] - entry) * units if in_pos else 0.0)
     equity.append(value)
     times.append(df.index[i])
 
     if not in_pos:
         if row["Close"] > row["H_24"] and row["Close"] > row["EMA50"]:
-
             entry = next_open * (1 + fee)
             sl = row["L_24"]
 
@@ -180,21 +159,17 @@ for i in range(len(df)-1):
 
             balance -= entry * units * fee
             in_pos = True
-
     else:
         if row["Low"] <= sl or row["Close"] < row["EMA50"]:
-
             exit_price = next_open * (1 - fee)
 
             balance += exit_price * units
             balance -= exit_price * units * fee
 
             in_pos = False
-            units = 0
+            units = 0.0
 
-# ======================
 # FORCE CLOSE
-# ======================
 if in_pos:
     last_price = df.iloc[-1]["Close"] * (1 - fee)
     balance += last_price * units
